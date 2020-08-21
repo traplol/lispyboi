@@ -1277,6 +1277,7 @@ struct GC
     GC()
         : m_marked(0)
         , m_total_consed(0)
+        , m_total_freed(0)
         , m_allocated_since_last_gc(0)
         , m_gc_collect_threshold(1 * 1024 * 1024) // 1 MiB
         , m_time_spent_in_gc(0)
@@ -1600,6 +1601,7 @@ struct GC
         {
             make_new_generation();
         }
+        m_total_freed += freed;
         return freed;
     }
 
@@ -1671,6 +1673,11 @@ struct GC
     size_t get_consed() const
     {
         return m_total_consed;
+    }
+
+    size_t get_freed() const
+    {
+        return m_total_freed;
     }
 
     size_t get_time_spent_in_gc() const
@@ -1923,6 +1930,7 @@ struct GC
     std::vector<Mark_Function> m_mark_functions;
     size_t m_marked;
     size_t m_total_consed;
+    size_t m_total_freed;
     size_t m_allocated_since_last_gc;
     size_t m_gc_collect_threshold;
     size_t m_time_spent_in_gc;
@@ -7557,6 +7565,11 @@ DEFUN("%GC-COLLECT", func_gc_collect, g.kernel(), false)
 DEFUN("%GC-GET-CONSED", func_gc_get_consed, g.kernel(), false)
 {
     return Value::wrap_fixnum(gc.get_consed());
+}
+
+DEFUN("%GC-GET-FREED", func_gc_get_freed, g.kernel(), false)
+{
+    return Value::wrap_fixnum(gc.get_freed());
 }
 
 DEFUN("%GC-GET-TIME-SPENT-IN-GC", func_gc_get_time_spent_in_gc, g.kernel(), false)
