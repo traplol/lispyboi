@@ -1277,10 +1277,11 @@ struct GC
     GC()
         : m_marked(0)
         , m_total_consed(0)
+        , m_allocated_since_last_gc(0)
+        , m_gc_collect_threshold(1 * 1024 * 1024) // 1 MiB
         , m_time_spent_in_gc(0)
         , m_times_gc_has_run(0)
         , m_is_paused(true)
-        , m_is_warmed_up(false)
     {
         m_free_small_bins.resize(SMALL_BINS_SIZE);
     }
@@ -1573,7 +1574,7 @@ struct GC
                 get_bin(r->size).push_back(r);
                 m_recent_allocations[i] = m_recent_allocations.back();
                 m_recent_allocations.pop_back();
-                freed++;
+                freed += r->size;
             }
             else if (r->collections_survived >= GENERATIONAL_SURVIVOR_THRESHOLD)
             {
@@ -1682,6 +1683,16 @@ struct GC
         return m_times_gc_has_run;
     }
 
+    size_t get_collect_threshold() const
+    {
+        return m_gc_collect_threshold;
+    }
+
+    void set_collect_threshold(size_t new_threshold)
+    {
+        m_gc_collect_threshold = new_threshold;
+    }
+
   private:
 
     Reference *ptr_to_ref(void *ptr)
@@ -1717,17 +1728,21 @@ struct GC
     FORCE_INLINE
     void maybe_mark_and_sweep()
     {
-        if (!m_is_paused && m_is_warmed_up)
+        if (!m_is_paused && m_allocated_since_last_gc > m_gc_collect_threshold)
         {
             // If a sweep doesn't free enough then to minimize successive garbage collections
             // we'll revert to a no longer warmed-up state which will only switch back when
             // there are enough recent allocations.
             auto start_time = std::chrono::high_resolution_clock::now();
-            m_is_warmed_up = mark_and_sweep() > GC_COOLDOWN_THRESHOLD;
+            if (mark_and_sweep() < m_gc_collect_threshold * 0.3)
+            {
+                m_gc_collect_threshold *= 1.3;
+            }
             auto end_time = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>( end_time - start_time ).count();
+            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
             m_time_spent_in_gc += duration;
             m_times_gc_has_run++;
+            m_allocated_since_last_gc = 0;
         }
     }
 
@@ -1737,6 +1752,7 @@ struct GC
         if constexpr (is_managed)
         {
             m_total_consed += size;
+            m_allocated_since_last_gc += size;
             maybe_mark_and_sweep();
         }
 
@@ -1772,7 +1788,6 @@ struct GC
         if constexpr (is_managed)
         {
             m_recent_allocations.push_back(ref);
-            m_is_warmed_up |= m_recent_allocations.size() >= GC_WARMUP_THRESHOLD;
         }
 
         return ref;
@@ -1803,10 +1818,9 @@ struct GC
         return m_free_small_bins[size];
     }
 
-    static constexpr auto GC_WARMUP_THRESHOLD = 1000000;
     // attempt to keep GC from running many times in succession
-    static constexpr auto GC_COOLDOWN_THRESHOLD = GC_WARMUP_THRESHOLD * 0.06;
-    static constexpr auto NEW_GENERATION_THRESHOLD = GC_WARMUP_THRESHOLD * 1.5;
+    //static constexpr auto GC_COOLDOWN_THRESHOLD = GC_WARMUP_THRESHOLD * 0.06;
+    static constexpr auto NEW_GENERATION_THRESHOLD = 150000; // objects per generation
     // how many GC runs does a Reference need to survive before being moved to the current generation?
     static constexpr auto GENERATIONAL_SURVIVOR_THRESHOLD = 2;
     static constexpr auto SMALL_BINS_SIZE = 256;
@@ -1909,10 +1923,11 @@ struct GC
     std::vector<Mark_Function> m_mark_functions;
     size_t m_marked;
     size_t m_total_consed;
+    size_t m_allocated_since_last_gc;
+    size_t m_gc_collect_threshold;
     size_t m_time_spent_in_gc;
     size_t m_times_gc_has_run;
     bool m_is_paused;
-    bool m_is_warmed_up;
 } gc;
 
 #define GC_GUARD()                              \
@@ -7552,6 +7567,19 @@ DEFUN("%GC-GET-TIME-SPENT-IN-GC", func_gc_get_time_spent_in_gc, g.kernel(), fals
 DEFUN("%GC-GET-TIMES-GC-HAS-RUN", func_gc_get_times_gc_has_run, g.kernel(), false)
 {
     return Value::wrap_fixnum(gc.get_times_gc_has_run());
+}
+
+DEFUN("%GC-GET-COLLECT-THRESHOLD", func_gc_get_collect_threshold, g.kernel(), false)
+{
+    return Value::wrap_fixnum(gc.get_collect_threshold());
+}
+
+DEFUN("%GC-SET-COLLECT-THRESHOLD", func_gc_set_collect_threshold, g.kernel(), false)
+{
+    CHECK_NARGS_EXACTLY(1);
+    CHECK_FIXNUM(args[0]);
+    gc.set_collect_threshold(args[0].as_fixnum());
+    return Value::nil();
 }
 
 ///////////////////////////////////////////////////////////////////////
