@@ -23,18 +23,25 @@
           (output-stream-write-char stream digit)))))
 
 (defun %format-cons (cons stream format-object-func)
-  (output-stream-write-char stream #\()
-  (while (consp (cdr cons))
-         (funcall format-object-func (car cons) stream)
-         (output-stream-write-char stream #\Space)
-         (setf cons (cdr cons)))
-  (cond ((null (cdr cons))
-         (funcall format-object-func (car cons) stream))
-        (t
-         (funcall format-object-func (car cons) stream)
-         (output-stream-write-string stream " . ")
-         (funcall format-object-func (cdr cons) stream)))
-  (output-stream-write-char stream #\)))
+  (if (and (eq 'quote (car cons))
+           (consp (cdr cons))
+           (null (cddr cons)))
+      (progn
+        (output-stream-write-char stream #\')
+        (funcall format-object-func (second cons) stream))
+      (progn
+        (output-stream-write-char stream #\()
+        (while (consp (cdr cons))
+          (funcall format-object-func (car cons) stream)
+          (output-stream-write-char stream #\Space)
+          (setf cons (cdr cons)))
+        (cond ((null (cdr cons))
+               (funcall format-object-func (car cons) stream))
+              (t
+               (funcall format-object-func (car cons) stream)
+               (output-stream-write-string stream " . ")
+               (funcall format-object-func (cdr cons) stream)))
+        (output-stream-write-char stream #\)))))
 
 (defun %format-object-a (object stream)
   (typecase object

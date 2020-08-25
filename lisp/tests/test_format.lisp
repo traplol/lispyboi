@@ -79,3 +79,11 @@
 (assert-string= "11" (format nil "~x" 17))
 (assert-string= "20" (format nil "~x" 32))
 (assert-string= "21" (format nil "~x" 33))
+
+(assert-string= "'FOO" (format nil "~s" ''foo))
+(assert-string= "'FOO" (format nil "~a" ''foo))
+(assert-string= "'(1 '2 '(3))" (format nil "~s" ''(1 '2 '(3))))
+(assert-string= "'(1 '2 '(3))" (format nil "~a" ''(1 '2 '(3))))
+
+(assert-string= "'(A B test 123)" (format nil "~a" ''(a b "test" 123)))
+(assert-string= "'(A B \"test\" 123)" (format nil "~s" ''(a b "test" 123)))
