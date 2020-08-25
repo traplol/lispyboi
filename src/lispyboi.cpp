@@ -2579,7 +2579,7 @@ struct VM_State
 
 };
 static VM_State *THE_LISP_VM;
-static Value macro_expand_impl(Value obj, VM_State &vm);
+static Value macro_expand_impl(Value obj, VM_State &vm, bool just_one = false);
 
 struct Runtime_Globals
 {
@@ -6875,6 +6875,16 @@ DEFUN("%MACRO-EXPAND", func_macro_expand, g.kernel(), false)
     return macro_expand_impl(args[0], *THE_LISP_VM);
 }
 
+DEFUN("%MACRO-EXPAND1", func_macro_expand1, g.kernel(), false)
+{
+    /***
+        (macro-expand1 expr)
+    */
+    CHECK_NARGS_EXACTLY(1);
+    const bool just_one = true;
+    return macro_expand_impl(args[0], *THE_LISP_VM, just_one);
+}
+
 DEFUN("%EVAL", func_eval, g.kernel(), false)
 {
     /***
@@ -8382,7 +8392,7 @@ Value VM_State::call_lisp_function(Value function_or_symbol, Value *args, uint32
 
 template<typename Function, typename ...ExtraArgs>
 static
-Value map(Value list, Function func, ExtraArgs&... args)
+Value map(Value list, Function func, ExtraArgs&&... args)
 {
     if (list.is_nil())
     {
@@ -8427,7 +8437,7 @@ Value zip3(Value a, Value b, Value c)
 }
 
 static
-Value macro_expand_impl(Value obj, VM_State &vm)
+Value macro_expand_impl(Value obj, VM_State &vm, bool just_one)
 {
     if (!obj.is_cons())
     {
@@ -8451,7 +8461,7 @@ Value macro_expand_impl(Value obj, VM_State &vm)
         {
             auto macro_name = second(obj);
             auto params_list = third(obj);
-            auto body = map(cdddr(obj), macro_expand_impl, vm);
+            auto body = map(cdddr(obj), macro_expand_impl, vm, false);
             GC_GUARD();
             auto res = gc.cons(car, gc.cons(macro_name, gc.cons(params_list, body)));
             GC_UNGUARD();
@@ -8460,7 +8470,7 @@ Value macro_expand_impl(Value obj, VM_State &vm)
         if (car == g.s_pLAMBDA)
         {
             auto lambda_list = second(obj); // @TODO: macroexpand &optional default expressions
-            auto body = map(cddr(obj), macro_expand_impl, vm);
+            auto body = map(cddr(obj), macro_expand_impl, vm, false);
             GC_GUARD();
             auto res = gc.cons(car, gc.cons(lambda_list, body));
             GC_UNGUARD();
@@ -8479,7 +8489,7 @@ Value macro_expand_impl(Value obj, VM_State &vm)
             auto handler_tags = map(handlers, first);
             auto handler_lambda_lists = map(handlers, second);
             auto handler_bodies = map(handlers, cddr);
-            auto expanded_bodies = map(handler_bodies, macro_expand_impl, vm);
+            auto expanded_bodies = map(handler_bodies, macro_expand_impl, vm, false);
             auto expanded_handlers = zip3(handler_tags, handler_lambda_lists, expanded_bodies);
             GC_GUARD();
             auto res = gc.cons(car, gc.cons(form, expanded_handlers));
@@ -8493,11 +8503,10 @@ Value macro_expand_impl(Value obj, VM_State &vm)
             auto args = rest(obj);
             auto vec = to_vector(args);
             auto expand1 = vm.call_lisp_function(function, vec.data(), vec.size());
-            auto expand_all = macro_expand_impl(expand1, vm);
-            return expand_all;
+            return just_one ? expand1 : macro_expand_impl(expand1, vm);
         }
     }
-    return map(obj, macro_expand_impl, vm);
+    return map(obj, macro_expand_impl, vm, false);
 }
 
 
