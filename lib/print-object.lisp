@@ -102,7 +102,7 @@ OBJECT should be returned")
   o)
 
 (defmethod print-object ((o function) stream)
-  (let ((bits (%bits-of o))
+  (let ((bits (kernel::%bits-of o))
         (n 0))
     (dotimes (i (length bits))
       (setf n (bit-shift n 1))
