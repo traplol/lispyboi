@@ -102,6 +102,7 @@
    type-of
    type-error
    consp
+   atom
    symbolp
    numberp
    fixnump
@@ -230,6 +231,7 @@
 (defun type-of (obj) (type-of obj))
 
 (defun consp (obj) (eq 'cons (type-of obj)))
+(defun atom (obj) (not (consp obj)))
 
 (defun symbolp (obj) (eq 'symbol (type-of obj)))
 
