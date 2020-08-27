@@ -141,7 +141,6 @@ struct Structure;
 struct Function;
 
 using System_Pointer = void*;
-
 using Primitive = Value (*)(Value *args, uint32_t nargs, bool &raised_signal);
 
 enum class Object_Type
@@ -1236,12 +1235,6 @@ static FORCE_INLINE
 bool symbolp(Value v)
 {
     return v.is_type(Object_Type::Symbol);
-}
-
-static FORCE_INLINE
-bool numberp(Value v)
-{
-    return v.is_fixnum() || v.is_type(Object_Type::Float);
 }
 
 static FORCE_INLINE
@@ -4861,6 +4854,11 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
     Value signal_args;
     Value func;
     uint32_t nargs;
+    enum class Call_Type
+    {
+        Doesnt_Push_Frame,
+        Pushes_Frame,
+    } call_type;
     DISPATCH_LOOP
     {
         if constexpr (debuggable)
@@ -4968,6 +4966,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     last_arg = cdr(last_arg);
                     nargs++;
                 }
+                call_type = Call_Type::Pushes_Frame;
                 goto do_funcall;
             }
 
@@ -4976,6 +4975,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                 PREDICTED(funcall);
                 func = pop_param();
                 nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+                call_type = Call_Type::Pushes_Frame;
 
                 do_funcall:
                 auto ofunc = func;
@@ -5008,8 +5008,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     // Although op_raise_signal also jumps here in a "funcall"-like way, it has
                     // already setup the stack in the state the closure expects to execute under
                     // so there is no need to push a frame for it here.
-                    if (static_cast<bytecode::Opcode>(*ip) == bytecode::Opcode::op_funcall ||
-                        static_cast<bytecode::Opcode>(*ip) == bytecode::Opcode::op_apply)
+                    if (call_type == Call_Type::Pushes_Frame)
                     {
                         push_frame(ip+5, nargs);
                     }
@@ -5089,6 +5088,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                 std::copy(begin, end, m_stack_top);
                 m_stack_top += nargs;
 
+                call_type = Call_Type::Doesnt_Push_Frame;
                 goto do_funcall;
             }
 
@@ -5394,6 +5394,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                         push_param(car(signal_args));
                         signal_args = cdr(signal_args);
                     }
+                    call_type = Call_Type::Doesnt_Push_Frame;
                     goto do_funcall;
                 }
                 else
@@ -7680,7 +7681,7 @@ DEFUN("BIT-SHIFT", func_bit_shift, g.kernel(), true)
     return Value::wrap_fixnum(integer >> -count);
 }
 
-DEFUN("GET-WORKING-DIRECTORY", func_get_working_directory, g.kernel(), true)
+DEFUN("GET-WORKING-DIRECTORY", func_get_working_directory, g.core(), true)
 {
     /***
         (get-working-directory)
@@ -7690,7 +7691,7 @@ DEFUN("GET-WORKING-DIRECTORY", func_get_working_directory, g.kernel(), true)
     return error.value() != 0 ? Value::nil() : gc.alloc_string(current_path);
 }
 
-DEFUN("CHANGE-DIRECTORY", func_change_directory, g.kernel(), true)
+DEFUN("CHANGE-DIRECTORY", func_change_directory, g.core(), true)
 {
     /***
         (change-directory path)
@@ -7710,7 +7711,7 @@ DEFUN("CHANGE-DIRECTORY", func_change_directory, g.kernel(), true)
     return error.value() != 0 ? Value::nil() : gc.alloc_string(current_path);
 }
 
-DEFUN("GET-EXECUTABLE-PATH", func_get_executable_path, g.kernel(), true)
+DEFUN("GET-EXECUTABLE-PATH", func_get_executable_path, g.core(), true)
 {
     /***
         (get-executable-path)
@@ -7719,7 +7720,7 @@ DEFUN("GET-EXECUTABLE-PATH", func_get_executable_path, g.kernel(), true)
     return gc.alloc_string(plat::get_executable_path());
 }
 
-DEFUN("GET-CLOCK-TICKS", func_get_clock_ticks, g.kernel(), true)
+DEFUN("GET-CLOCK-TICKS", func_get_clock_ticks, g.core(), true)
 {
     /***
         (get-clock-ticks)
@@ -7731,7 +7732,7 @@ DEFUN("GET-CLOCK-TICKS", func_get_clock_ticks, g.kernel(), true)
     return Value::wrap_fixnum(microseconds.count());
 }
 
-DEFUN("CLOCKS-PER-SECOND", func_clocks_per_second, g.kernel(), true)
+DEFUN("CLOCKS-PER-SECOND", func_clocks_per_second, g.core(), true)
 {
     /***
         (clocks-per-second)
@@ -7740,7 +7741,7 @@ DEFUN("CLOCKS-PER-SECOND", func_clocks_per_second, g.kernel(), true)
     return Value::wrap_fixnum(1000000); // @FIXME use something better than costant number
 }
 
-DEFUN("OPERATING-SYSTEM", func_operating_system, g.kernel(), true)
+DEFUN("OPERATING-SYSTEM", func_operating_system, g.core(), true)
 {
     /***
         (operating-system)
