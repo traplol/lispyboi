@@ -5167,6 +5167,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
 
             DISPATCH(set_local)
             {
+                PREDICTED(set_local)
                 auto index = *reinterpret_cast<const uint32_t*>(ip+1);
                 m_locals[index] = param_top();
                 ip += 5;
@@ -5589,6 +5590,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     push_param(gc.alloc_object<Float>(f + 1.0));
                 }
                 ip += 1;
+                PREDICT(set_local);
                 DISPATCH_NEXT;
             }
 
@@ -9171,7 +9173,7 @@ int main(int argc, char **argv)
                                                  const std::pair<Opcode_Pair, int> &b) {
                                                   return a.second > b.second;
                                               });
-    int count = 10;
+    int count = 30;
     for (auto &[pair, times] : results)
     {
         std::cout << bytecode::opcode_name(static_cast<bytecode::Opcode>(pair.a)) << " : "
