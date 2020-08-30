@@ -7288,7 +7288,7 @@ std::ios_base::openmode get_mode(Value v)
 {
     if (v == g.s_OVERWRITE)
     {
-        return std::ios_base::trunc;
+        return std::ios_base::out | std::ios_base::trunc;
     }
     else if (v == g.s_READ)
     {
@@ -7296,7 +7296,7 @@ std::ios_base::openmode get_mode(Value v)
     }
     else if (v == g.s_APPEND)
     {
-        return std::ios_base::app;
+        return std::ios_base::out | std::ios_base::app;
     }
     return static_cast<std::ios_base::openmode>(0);
 }
