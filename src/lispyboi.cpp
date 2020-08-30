@@ -7391,15 +7391,15 @@ DEFUN("%FILE-MODE", func_file_mode, g.kernel(), false)
     CHECK_FILE_STREAM(it);
     auto mode = it.as_object()->file_stream()->mode();
     std::vector<Value> vals;
-    if (mode | std::ios_base::app)
+    if (mode & std::ios_base::app)
     {
         vals.push_back(g.s_APPEND);
     }
-    if (mode | std::ios_base::trunc)
+    if (mode & std::ios_base::trunc)
     {
         vals.push_back(g.s_OVERWRITE);
     }
-    if (mode | std::ios_base::in)
+    if (mode & std::ios_base::in)
     {
         vals.push_back(g.s_READ);
     }

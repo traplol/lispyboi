@@ -19,14 +19,8 @@
 (defmacro file-flush (file-stream) `(kernel::%file-flush ,file-stream))
 (defun file-flush (file-stream) (file-flush file-stream))
 
-(defun file-mode (file-stream)
-  (case (kernel::%file-mode file-stream)
-    (0 nil)
-    (1 'read)
-    (2 'overwrite)
-    (3 '(read overwrite))
-    (4 'append)
-    (5 '(read append))))
+(defmacro file-mode (file-stream) `(kernel::%file-mode ,file-stream))
+(defun file-mode (file-stream) (file-mode file-stream))
 
 (defun file-tellg (file-stream)
   (kernel::%file-tellg file-stream))
