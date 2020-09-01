@@ -127,6 +127,7 @@
    typecase
    etypecase
    typecaselet
+   otherwise
 
    get-setf-functions
    get-setf-expansion
@@ -242,27 +243,15 @@
   (cons 'kernel::%apply (cons func args)))
 
 (defmacro - (&rest vals) (cons 'kernel::%- vals))
-(defun - (&rest vals) (apply #'kernel::%- vals))
-
 (defmacro + (&rest vals) (cons 'kernel::%+ vals))
-(defun + (&rest vals) (apply #'kernel::%+ vals))
-
 (defmacro * (&rest vals) (cons 'kernel::%* vals))
-(defun * (&rest vals) (apply #'kernel::%* vals))
-
 (defmacro / (x y) (list 'kernel::%/ x y))
-(defun / (x y) (/ x y))
-
 (defmacro < (&rest vals) (cons 'kernel::%< vals))
-(defun < (&rest vals) (apply #'kernel::%< vals))
-
 (defmacro = (&rest vals) (cons 'kernel::%= vals))
-(defun = (&rest vals) (apply #'kernel::%= vals))
-
 (defmacro > (&rest vals) (cons 'kernel::%> vals))
-(defun > (&rest vals) (apply #'kernel::%> vals))
-
 (defmacro /= (&rest vals) (list 'not (cons 'kernel::%= vals)))
+
+(defun / (x y) (/ x y))
 (defun /= (&rest vals) (not (apply #'kernel::%= vals)))
 
 (defmacro putchar (character &optional (stm *standard-output*))
@@ -808,8 +797,53 @@ may be provided or left NIL."
              body
              nil))
 
-(let ((setf-functions nil))
+(let ((function-macros nil))
+  (defun %function (f)
+    (cdr (assoc f function-macros)))
 
+  (defun %set-function (key val)
+    (let ((found (assoc key function-macros)))
+      (if found
+          (kernel::%set-cdr found val)
+          (setq function-macros (cons (cons key val)
+                                      function-macros)))))
+
+  (defun function-macros ()
+    (copy-list function-macros)))
+
+(%set-function '+ 'kernel::%+)
+(%set-function '- 'kernel::%-)
+(%set-function '* 'kernel::%*)
+(%set-function '< 'kernel::%<)
+(%set-function '= 'kernel::%=)
+(%set-function '> 'kernel::%>)
+
+(defmacro function (&whole form f)
+  ;; Interestingly, FUNCTION is a special form inside the compiler that resolves the function
+  ;; value pointed to by a symbol at compile time effectively making it a NOP at runtime.
+  ;;
+  ;; Because macro expansion happens before compile time we can implement an optimization
+  ;; for transforming some commonly applied functions into "magically" calling their kernel
+  ;; primitive implementation. This is most useful when a kernel function takes a variable
+  ;; number of args and the lisp code would define its wrapper using &REST because calling
+  ;; a &REST kernel primitive does not allocate but calling the lispyboi function itself does.
+  ;;
+  ;; Specifically what I mean is for example:
+  ;;     (kernel::%+ 10 20 30 40 50)
+  ;;
+  ;;     The kernel primitive %+ consumes the "&REST"-like arguments directly from the stack
+  ;;     allocating no extra memory whereas,
+  ;;
+  ;;     (defun + (&rest args) (apply #'kernel::%+ args))
+  ;;     (+ 10 20 30 40 50)
+  ;;
+  ;;     This must explicitly allocate a list to be referenced by ARGS.
+  (let ((found (%function f)))
+    (if found
+        (list 'function found)
+        form)))
+
+(let ((setf-functions nil))
   (defun get-setf-functions ()
     (copy-list setf-functions))
 

@@ -2660,6 +2660,7 @@ struct Runtime_Globals
     Value s_aOPTIONAL;
     Value s_aREST;
     Value s_aBODY;
+    Value s_aWHOLE;
 
     Value s_NULL;
     Value s_DIVIDE_BY_ZERO_ERROR;
@@ -8273,6 +8274,7 @@ void initialize_globals(compiler::Scope *root_scope, char **argv)
     g.s_aOPTIONAL        = core->export_symbol("&OPTIONAL");
     g.s_aREST            = core->export_symbol("&REST");
     g.s_aBODY            = core->export_symbol("&BODY");
+    g.s_aWHOLE           = core->export_symbol("&WHOLE");
 
     g.s_DIVIDE_BY_ZERO_ERROR = core->export_symbol("DIVIDE-BY-ZERO-ERROR");
     g.s_INDEX_OUT_OF_BOUNDS_ERROR = core->export_symbol("INDEX-OUT-OF-BOUNDS-ERROR");
@@ -8502,10 +8504,25 @@ Value macro_expand_impl(Value obj, VM_State &vm, bool just_one)
         auto it = g.macros.find(car.as_object()->symbol());
         if (it != g.macros.end())
         {
-            auto function = it->second;
-            auto args = rest(obj);
+            auto func = it->second;
+            auto function = func.as_object()->closure()->function();
+            Value args = rest(obj);
+            // @FIXME: This is a very ugly hack to get the &WHOLE form into a macro but works for testing
+            if (function &&
+                function->parameters().size() != 0 &&
+                function->parameters()[0] == g.s_aWHOLE.as_object()->symbol())
+            {
+                GC_GUARD();
+                args = gc.cons(obj, args);
+                args = gc.cons(Value::nil(), args);
+                GC_UNGUARD();
+            }
             auto vec = to_vector(args);
-            auto expand1 = vm.call_lisp_function(function, vec.data(), vec.size());
+            auto expand1 = vm.call_lisp_function(func, vec.data(), vec.size());
+            if (expand1 == obj)
+            {
+                return expand1;
+            }
             return just_one ? expand1 : macro_expand_impl(expand1, vm);
         }
     }

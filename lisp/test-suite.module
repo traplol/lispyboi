@@ -21,6 +21,7 @@
            (run-test "tests/test_destructuring-bind.lisp")
            (run-test "tests/test_equal.lisp")
            (run-test "tests/test_format.lisp")
+           (run-test "tests/test_function.lisp")
            (run-test "tests/test_handler-case.lisp")
            (run-test "tests/test_hash-table.lisp")
            (run-test "tests/test_if.lisp")
