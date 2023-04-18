@@ -23,6 +23,7 @@
 #include "platform.hpp"
 #include "runtime_globals.hpp"
 #include "util.hpp"
+#include "vm_state.hpp"
 #include "bytecode/compiler.hpp"
 #include "bytecode/emitter.hpp"
 #include "bytecode/opcode.hpp"
@@ -89,328 +90,7 @@ namespace bytecode
 struct Emitter;
 }
 
-struct VM_State
-{
-    struct Call_Frame
-    {
-        const uint8_t *ip;
-        Value current_closure;
-        Value *locals;
-        Value *stack_top;
-    };
-
-    struct Exception
-    {
-        Exception(Value what) : what(what) {}
-
-        Value what;
-    };
-
-    struct Unhandleable_Exception : Exception
-    {
-        const char *msg;
-    };
-
-    struct Signal_Exception : Exception
-    {
-        Signal_Exception(Value what)
-            : Exception(what)
-            , ip(nullptr)
-            , stack_trace_top(nullptr)
-            , stack_trace_bottom(nullptr)
-        {}
-
-        Signal_Exception(Value what, const uint8_t *ip, Call_Frame *stack_top, Call_Frame *stack_bottom)
-            : Exception(what)
-            , ip(ip)
-            , stack_trace_top(stack_top)
-            , stack_trace_bottom(stack_bottom)
-        {}
-
-        const uint8_t *ip;
-        const Call_Frame *stack_trace_top;
-        const Call_Frame *stack_trace_bottom;
-    };
-
-
-    VM_State()
-        : m_current_closure(Value::nil())
-        , m_open_closure_references(nullptr)
-    {
-        m_locals = m_stack_top = m_stack_bottom = new Value[0x100000];
-        m_call_frame_top = m_call_frame_bottom = new Call_Frame[0x10000];
-        gc.register_marking_function([this](GC &gc) { gc_mark(gc); });
-    }
-
-    Value &param_top()
-    {
-        return *(m_stack_top - 1);
-    }
-
-    Value &param_top(int32_t n)
-    {
-        return *(m_stack_top - 1 + n);
-    }
-
-    void push_param(Value v)
-    {
-        *m_stack_top++ = v;
-    }
-
-    Value pop_param()
-    {
-        return *--m_stack_top;
-    }
-
-    void pop_params(uint32_t n)
-    {
-        m_stack_top -= n;
-    }
-
-    void push_frame(const uint8_t *ip, uint32_t nargs)
-    {
-        Call_Frame frame {
-            ip,
-            m_current_closure,
-            m_locals,
-            m_stack_top - nargs
-        };
-        *m_call_frame_top++ = frame;
-    }
-
-    Call_Frame pop_frame()
-    {
-        return *--m_call_frame_top;
-    }
-
-    Call_Frame &frame_top()
-    {
-        return *(m_call_frame_top - 1);
-    }
-
-    void set_frame(const Call_Frame &frame)
-    {
-        m_current_closure = frame.current_closure;
-        m_locals = frame.locals;
-        m_stack_top = frame.stack_top;
-    }
-
-    Call_Frame &get_frame(uint32_t idx)
-    {
-        return *(m_call_frame_top - idx);
-    }
-
-    const Value *stack_top() const
-    {
-        return m_stack_top;
-    }
-
-    const Value *stack_bottom() const
-    {
-        return m_stack_bottom;
-    }
-
-    const Call_Frame *call_frame_top() const
-    {
-        return m_call_frame_top;
-    }
-
-    const Call_Frame *call_frame_bottom() const
-    {
-        return m_call_frame_bottom;
-    }
-
-
-    template<bool debuggable>
-    const uint8_t *execute_impl(const uint8_t *ip);
-
-    inline const uint8_t *execute(const uint8_t *ip);
-
-    Value call_lisp_function(Value function_or_symbol, Value *args, uint32_t nargs);
-
-    void debug_dump(std::ostream &out, const std::string &tag, const uint8_t *ip, bool full = false) const;
-    int stack_dump(std::ostream &out, size_t max_size = 15) const;
-
-    struct Signal_Handler
-    {
-        Value tag;
-        Value handler;
-    };
-
-    struct Handler_Case
-    {
-        Value *stack;
-        Call_Frame *frame;
-        std::vector<Signal_Handler> handlers;
-    };
-
-    struct Save_State
-    {
-        Value current_closure;
-        Value *locals;
-        Value *stack_top, *stack_bottom;
-        Call_Frame *call_frame_top, *call_frame_bottom;
-        Closure_Reference *open_closure_references;
-        std::vector<Handler_Case> handler_cases;
-    };
-
-    Save_State save()
-    {
-        return {
-            m_current_closure,
-            m_locals,
-            m_stack_top, m_stack_bottom,
-            m_call_frame_top, m_call_frame_bottom,
-            m_open_closure_references,
-            m_handler_cases
-        };
-    }
-
-    void restore(Save_State &state)
-    {
-        m_current_closure = state.current_closure;
-        m_locals = state.locals;
-        m_stack_top = state.stack_top;
-        m_stack_bottom = state.stack_bottom;
-        m_call_frame_top = state.call_frame_top;
-        m_call_frame_bottom = state.call_frame_bottom;
-        m_open_closure_references = state.open_closure_references;
-        m_handler_cases = state.handler_cases;
-    }
-
-    __attribute__((used))
-    __attribute__((noinline))
-    void ez_debug(const uint8_t *ip)
-    {
-        debug_dump(std::cout, "EZ DEBUG", ip, true);
-    }
-
-    #if PROFILE_OPCODE_PAIRS
-    const std::unordered_map<Opcode_Pair, int> &opcode_pairs() const
-    {
-        return m_opcode_pairs;
-    }
-    #endif
-
-  private:
-
-    void push_handler_case(std::vector<Signal_Handler> &&handlers)
-    {
-        m_handler_cases.push_back({m_stack_top, m_call_frame_top, std::move(handlers)});
-    }
-
-    void pop_handler_case()
-    {
-        m_handler_cases.pop_back();
-    }
-
-    bool find_handler(Value tag, bool auto_pop, Handler_Case &out_case_state, Signal_Handler &out_handler);
-
-    void gc_mark(GC &gc)
-    {
-        for (auto p = m_stack_bottom; p != m_stack_top; ++p)
-        {
-            gc.mark_value(*p);
-        }
-
-        // Ensure our stack of closures don't accidently get GC
-        for (auto p = m_call_frame_bottom; p != m_call_frame_top; ++p)
-        {
-            gc.mark_value(p->current_closure);
-        }
-
-        gc.mark_value(m_current_closure);
-
-        gc.mark_closure_reference(m_open_closure_references);
-
-        for (auto &handler_case : m_handler_cases)
-        {
-            for (auto &handler : handler_case.handlers)
-            {
-                gc.mark_value(handler.tag);
-                gc.mark_value(handler.handler);
-            }
-        }
-    }
-
-    Closure_Reference *capture_closure_reference(Value *local)
-    {
-        Closure_Reference* prev_ref = nullptr;
-        auto curr_ref = m_open_closure_references;
-
-        while (curr_ref != nullptr && std::greater()(curr_ref->location(), local))
-        {
-            prev_ref = curr_ref;
-            curr_ref = curr_ref->next;
-        }
-
-        if (curr_ref != nullptr && curr_ref->location() == local) return curr_ref;
-
-        auto new_ref = gc.make_closure_reference(local);
-        new_ref->next = curr_ref;
-
-        if (prev_ref == nullptr)
-        {
-            m_open_closure_references = new_ref;
-        }
-        else
-        {
-            prev_ref->next = new_ref;
-        }
-
-        return new_ref;
-    }
-
-    void close_values(Value *end)
-    {
-        while (m_open_closure_references != nullptr
-               && m_open_closure_references->location() >= end)
-        {
-            m_open_closure_references->close();
-            m_open_closure_references = m_open_closure_references->next;
-        }
-    }
-
-
-    Value m_current_closure;
-    Value *m_locals;
-    Value *m_stack_top, *m_stack_bottom;
-    Call_Frame *m_call_frame_top, *m_call_frame_bottom;
-    Closure_Reference *m_open_closure_references;
-    std::vector<Handler_Case> m_handler_cases;
-
-    struct Call_Lisp_From_Native_Stub
-    {
-        Call_Lisp_From_Native_Stub()
-            : emitter(nullptr)
-            , nargs_offset(0)
-            , function_offset(0)
-        {}
-        bytecode::Emitter *emitter;
-        uint32_t nargs_offset;
-        uint32_t function_offset;
-    } m_stub;
-
-    #if PROFILE_OPCODE_PAIRS
-    std::unordered_map<Opcode_Pair, int> m_opcode_pairs;
-    #endif
-
-};
-static VM_State *THE_LISP_VM;
 static Value macro_expand_impl(Value obj, VM_State &vm, bool just_one = false);
-
-inline const uint8_t *VM_State::execute(const uint8_t *ip)
-{
-    #if USE_COMPUTED_GOTOS
-    if (g.debugger.breaking)
-    {
-        return execute_impl<true>(ip);
-    }
-    return execute_impl<false>(ip);
-    #else
-    return execute_impl<true>(ip);
-    #endif
-}
 
 std::string repr(Value value)
 {
@@ -571,14 +251,6 @@ bool Symbol::is_keyword() const
     return m_package == g.keyword();
 }
 
-FORCE_INLINE
-bool stringp(Value v)
-{
-    return v.is_type(Object_Type::Simple_Array) &&
-        v.as_object()->simple_array()->element_type() == g.s_CHARACTER;
-}
-
-
 Value GC::alloc_string(const char *str, Fixnum len)
 {
     std::vector<uint32_t> codepoints;
@@ -630,1046 +302,6 @@ Value GC::alloc_string(const std::string &str)
 }
 
 
-
-
-int VM_State::stack_dump(std::ostream &out, size_t max_size) const
-{
-    if (max_size == ~0u)
-    {
-        auto a = (m_call_frame_top - m_call_frame_bottom);
-        auto b = (m_stack_top - m_stack_bottom);
-        max_size = std::max(a, b);
-    }
-    auto rt = m_call_frame_top;
-    auto rb = m_call_frame_bottom;
-
-    auto pt = m_stack_top;
-    auto pb = m_stack_bottom;
-
-    auto r_stack_delta = rt - rb;
-    out << std::setfill(' ') << std::dec;
-    out << "|R-stack " << std::setw(9) << r_stack_delta << " |         P-stack\n";
-    out << "|==================|================\n";
-    out << std::setfill('0');
-    for (;max_size != 0; max_size--)
-    {
-        rt--;
-        pt--;
-        if (reinterpret_cast<uintptr_t>(rt) < reinterpret_cast<uintptr_t>(rb))
-        {
-            out << "| **************** |";
-        }
-        else
-        {
-            out << "| " << std::hex << std::setw(16) << reinterpret_cast<uintptr_t>(rt->ip) << " |";
-        }
-
-        if (reinterpret_cast<uintptr_t>(pt) < reinterpret_cast<uintptr_t>(pb))
-        {
-            out << "                ";
-        }
-        else
-        {
-            out << std::hex << std::setw(16) << reinterpret_cast<uintptr_t>(pt);
-        }
-        if (pt == m_locals)
-        {
-            out << " -> ";
-        }
-        else
-        {
-            out << "    ";
-        }
-
-        if (reinterpret_cast<uintptr_t>(pt) < reinterpret_cast<uintptr_t>(pb))
-        {
-            out << " ***";
-        }
-        else
-        {
-            auto obj_repr = repr(*pt);
-            const int n = 70;
-            if (obj_repr.size() < n)
-            {
-                out << " " << obj_repr;
-            }
-            else
-            {
-                out << " " << obj_repr.substr(0, n-3) << "...";
-            }
-        }
-        out << "\n";
-    }
-    int lines_printed = max_size;
-    if (!m_current_closure.is_nil())
-    {
-        auto cc = m_current_closure.as_object()->closure();
-        auto func_caps = cc->function()->capture_offsets();
-        out << "Captures for current closure:\n";
-        lines_printed++;
-        auto &caps = cc->captures();
-        for (size_t i = 0; i < caps.size(); ++i)
-        {
-            auto &offs = func_caps[i];
-            out << offs.name << " "
-                << std::hex << reinterpret_cast<uintptr_t>(caps[i]->location()) << " "
-                << (caps[i] ? repr(caps[i]->value()) : "#<nullptr>") << "\n";
-            lines_printed++;
-        }
-    }
-    return lines_printed;
-}
-
-void VM_State::debug_dump(std::ostream &out, const std::string &tag, const uint8_t *ip, bool full) const
-{
-    //plat::clear_console();
-    const Function *function;
-    int lines_printed = 0;
-    if (bytecode::Debug_Info::find_function(ip, &function))
-    {
-        std::vector<const uint8_t*> instructions;
-        int ip_at = -1;
-        for (auto it = function->begin(); it != function->end();)
-        {
-            if (it == ip)
-            {
-                ip_at = instructions.size();
-            }
-            instructions.push_back(it);
-            it += bytecode::opcode_size(static_cast<bytecode::Opcode>(*it));
-        }
-        instructions.push_back(function->end());
-
-        if (ip_at != -1 && instructions.size() >= 32)
-        {
-            out << "Disassemble for \"" << tag << "\"\n";
-            lines_printed++;
-
-            auto first = std::max(ip_at - 15, 0);
-            auto instr = instructions[first];
-            bool disassembling = true;
-            for (; lines_printed < 32; ++lines_printed)
-            {
-                if (instr == function->end())
-                {
-                    disassembling = false;
-                }
-
-                if (disassembling)
-                {
-                    instr = bytecode::disassemble1(out, instr, instr == ip);
-                }
-                else
-                {
-                    out << "\n";
-                }
-            }
-        }
-        else
-        {
-            lines_printed = bytecode::disassemble(out, tag, function, ip);
-        }
-    }
-    else
-    {
-        lines_printed = bytecode::disassemble(out, tag, ip, true);
-    }
-
-    for (; lines_printed <= 32; lines_printed++)
-    {
-        out << "\n";
-    }
-
-    if (full)
-    {
-        stack_dump(out, ~0u);
-    }
-    else
-    {
-        stack_dump(out);
-    }
-}
-
-template<bool debuggable>
-const uint8_t *VM_State::execute_impl(const uint8_t *ip)
-{
-
-#define BYTECODE_DEF(name, noperands, nargs, size, docstring) &&opcode_ ## name,
-    void *computed_gotos[256] =
-    {
-        #include "bytecode.def"
-    };
-
-#define DISPATCH(name) case bytecode::Opcode::op_ ## name: opcode_ ## name:
-
-#define DISPATCH_NEXT if constexpr (debuggable) break; else goto *computed_gotos[*ip];
-#define EXEC switch(static_cast<bytecode::Opcode>(*ip))
-#define DISPATCH_LOOP for (;;)
-
-#if PROFILE_OPCODE_PAIRS
-#define PREDICTED(name) //empty
-#define PREDICT(name) //empty
-#else
-#define PREDICTED(name) predicted_ ## name:
-#define PREDICT(name)                                                   \
-    do {                                                                \
-        if (static_cast<bytecode::Opcode>(*ip) == bytecode::Opcode::op_ ## name) \
-        {                                                               \
-            goto predicted_ ## name;                                       \
-        }                                                               \
-    } while (0)
-#endif
-
-
-#define TYPE_CHECK(what, typecheck, expected)                           \
-    do {                                                                \
-        if (!(what).typecheck) {                                        \
-            signal_args = gc.list(g.s_TYPE_ERROR, (expected), (what));  \
-            goto raise_signal;                                          \
-        }                                                               \
-    } while (0)
-
-#define CHECK_FIXNUM(what) TYPE_CHECK(what, is_fixnum(), g.s_FIXNUM)
-#define CHECK_CONS(what) TYPE_CHECK(what, is_cons(), g.s_CONS)
-#define CHECK_LIST(what) TYPE_CHECK(what, is_list(), g.s_LIST)
-#define CHECK_CHARACTER(what) TYPE_CHECK(what, is_character(), g.s_CHARACTER)
-#define CHECK_SYMBOL(what) TYPE_CHECK(what, is_type(Object_Type::Symbol), g.s_SYMBOL)
-#define CHECK_FILE_STREAM(what) TYPE_CHECK(what, is_type(Object_Type::File_Stream), g.s_FILE_STREAM)
-#define CHECK_SIMPLE_ARRAY(what) TYPE_CHECK(what, is_type(Object_Type::Simple_Array), g.s_SIMPLE_ARRAY)
-#define CHECK_SYSTEM_POINTER(what) TYPE_CHECK(what, is_type(Object_Type::System_Pointer), g.s_SYSTEM_POINTER)
-#define CHECK_STRUCT(what) TYPE_CHECK(what, is_type(Object_Type::Structure), g.s_STRUCTURE)
-
-
-    static_assert(sizeof(*ip) == 1, "pointer arithmetic will not work as expected.");
-    Value signal_args;
-    Value func;
-    uint32_t nargs;
-    enum class Call_Type
-    {
-        Doesnt_Push_Frame,
-        Pushes_Frame,
-    } call_type;
-    const uint8_t *signal_raised_at_ip = nullptr;
-    DISPATCH_LOOP
-    {
-        if constexpr (debuggable)
-        {
-            const auto opcode = static_cast<bytecode::Opcode>(*ip);
-            if (g.debugger.breaking)
-            {
-                // @TODO: Fix debugger step over:
-                // currently it just goes to the next instruction address which is ok in the case of
-                // op_apply or op_funcall but it is incorrect in the case off op_jump and op_pop_jump_if_nil
-                if ((g.debugger.command == Runtime_Globals::Debugger::Command::Step_Over &&
-                     (g.debugger.addr0 == ip || g.debugger.addr1 == ip))
-                    || g.debugger.command == Runtime_Globals::Debugger::Command::Step_Into)
-                {
-                    debug_dump(std::cout, "VM EXEC", ip);
-                    auto &in = std::cin;
-                    bool eat_newline = true;
-                    switch (in.peek())
-                    {
-                        case 'c':
-                            g.debugger.command = Runtime_Globals::Debugger::Command::Continue;
-                            in.get();
-                            break;
-                        case 's':
-                            g.debugger.command = Runtime_Globals::Debugger::Command::Step_Into;
-                            in.get();
-                            break;
-                        case 'n':
-                            g.debugger.command = Runtime_Globals::Debugger::Command::Step_Over;
-                            in.get();
-                            break;
-                        case '\n':
-                            in.get();
-                            eat_newline = false;
-                            break;
-                    }
-
-                    if (eat_newline && in.peek() == '\n')
-                    {
-                        in.get();
-                    }
-
-                    switch (g.debugger.command)
-                    {
-                        case Runtime_Globals::Debugger::Command::Continue:
-                            g.debugger.breaking = false;
-                            break;
-                        case Runtime_Globals::Debugger::Command::Step_Into:
-                            break;
-                        case Runtime_Globals::Debugger::Command::Step_Over:
-                            g.debugger.addr0 = ip + bytecode::opcode_size(opcode);
-                            g.debugger.addr1 = nullptr;
-                            if (opcode == bytecode::Opcode::op_pop_jump_if_nil)
-                            {
-                                auto offset = *reinterpret_cast<const int32_t*>(ip+1);
-                                g.debugger.addr1 = ip + offset;
-                            }
-                            else if (opcode == bytecode::Opcode::op_jump)
-                            {
-                                auto offset = *reinterpret_cast<const int32_t*>(ip+1);
-                                g.debugger.addr0 = ip + offset;
-                            }
-                            break;
-                    }
-                }
-            }
-#if PROFILE_OPCODE_PAIRS
-            auto this_opcode = static_cast<bytecode::Opcode>(*ip);
-            switch (this_opcode)
-            {
-                case bytecode::Opcode::op_halt:
-                case bytecode::Opcode::op_return:
-                case bytecode::Opcode::op_gotocall:
-                case bytecode::Opcode::op_jump:
-                case bytecode::Opcode::op_pop_jump_if_nil:
-                    break;
-                default: {
-                    auto next_opcode = *(ip + bytecode::opcode_size(this_opcode));
-                    m_opcode_pairs[Opcode_Pair{static_cast<short>(this_opcode), next_opcode}]++;
-                } break;
-            }
-#endif
-        } // if constexpr (debuggable)
-
-        EXEC
-        {
-            DISPATCH(apply)
-            {
-                func = pop_param();
-                nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-                if (nargs == 0)
-                {
-                    GC_GUARD();
-                    signal_args = gc.list(g.s_SIMPLE_ERROR, gc.alloc_string("Too few arguments!"));
-                    GC_UNGUARD();
-                    goto raise_signal;
-                }
-
-                auto last_arg = pop_param();
-                CHECK_LIST(last_arg);
-                nargs--;
-                while (!last_arg.is_nil())
-                {
-                    push_param(car(last_arg));
-                    last_arg = cdr(last_arg);
-                    nargs++;
-                }
-                call_type = Call_Type::Pushes_Frame;
-                goto do_funcall;
-            }
-
-            DISPATCH(funcall)
-            {
-                PREDICTED(funcall);
-                func = pop_param();
-                nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-                call_type = Call_Type::Pushes_Frame;
-
-                do_funcall:
-                auto ofunc = func;
-                if (symbolp(func))
-                {
-                    func = func.as_object()->symbol()->function();
-                }
-
-                if (func.is_lisp_primitive())
-                {
-                    bool raised_signal = false;
-                    auto primitive = func.as_lisp_primitive();
-                    auto result = primitive(m_stack_top - nargs, nargs, raised_signal);
-                    m_stack_top -= nargs;
-                    if (raised_signal)
-                    {
-                        signal_args = result;
-                        goto raise_signal;
-                    }
-                    else
-                    {
-                        push_param(result);
-                        ip += 1 + sizeof(nargs);
-                    }
-                    DISPATCH_NEXT;
-                }
-
-                if (func.is_type(Object_Type::Closure))
-                {
-                    // Although op_raise_signal also jumps here in a "funcall"-like way, it has
-                    // already setup the stack in the state the closure expects to execute under
-                    // so there is no need to push a frame for it here.
-                    if (call_type == Call_Type::Pushes_Frame)
-                    {
-                        push_frame(ip+5, nargs);
-                    }
-
-                    m_current_closure = func;
-                    auto closure = func.as_object()->closure();
-                    auto function = closure->function();
-
-                    // locals always start at first argument
-                    m_locals = m_stack_top - nargs;
-
-                    if (function->is_too_many_args(nargs))
-                    {
-                        GC_GUARD();
-                        signal_args = gc.list(g.s_SIMPLE_ERROR,
-                                              gc.alloc_string("Too many arguments!"),
-                                              func,
-                                              Value::wrap_fixnum(function->arity()),
-                                              Value::wrap_fixnum(nargs));
-                        GC_UNGUARD();
-                        goto raise_signal;
-                    }
-
-                    if (function->is_too_few_args(nargs))
-                    {
-                        GC_GUARD();
-                        signal_args = gc.list(g.s_SIMPLE_ERROR,
-                                              gc.alloc_string("Too few arguments!"),
-                                              func,
-                                              Value::wrap_fixnum(function->arity()),
-                                              Value::wrap_fixnum(nargs));
-                        GC_UNGUARD();
-                        goto raise_signal;
-                    }
-
-                    if (function->has_rest() && nargs > function->rest_index())
-                    {
-                        auto rest = to_list(m_locals+function->rest_index(),
-                                            nargs - function->rest_index());
-                        m_locals[function->rest_index()] = rest;
-                    }
-
-                    m_stack_top = m_locals + function->num_locals();
-                    #if DEBUG > 1
-                    {
-                        assert(function->arity() <= function->num_locals());
-                        auto start = m_locals + function->arity();
-                        auto end = m_locals + function->num_locals();
-                        for (; start != end; ++start)
-                        {
-                            *start = Value::nil();
-                        }
-                    }
-                    #endif
-
-                    ip = function->entrypoint(nargs);
-                    DISPATCH_NEXT;
-                }
-
-                // error
-                GC_GUARD();
-                signal_args = gc.list(g.s_SIMPLE_ERROR, gc.alloc_string("Not a callable object"), ofunc, func);
-                GC_UNGUARD();
-                goto raise_signal;
-            }
-
-            DISPATCH(gotocall)
-            {
-
-                close_values(m_locals);
-
-                func = pop_param();
-                nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-                auto begin = m_stack_top - nargs;
-                auto end = m_stack_top;
-                m_stack_top = m_locals;
-                std::copy(begin, end, m_stack_top);
-                m_stack_top += nargs;
-
-                call_type = Call_Type::Doesnt_Push_Frame;
-                goto do_funcall;
-            }
-
-            DISPATCH(pop_handler_case)
-                pop_handler_case();
-                // fallthrough
-            DISPATCH(return)
-            {
-                if (m_call_frame_top == m_call_frame_bottom)
-                {
-                    goto done;
-                }
-
-                close_values(m_locals);
-
-                auto val = param_top();
-                auto frame = pop_frame();
-                set_frame(frame);
-                push_param(val);
-                if (frame.ip == nullptr)
-                {
-                    goto done;
-                }
-                ip = frame.ip;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(jump)
-            {
-                auto offset = *reinterpret_cast<const int32_t*>(ip+1);
-                ip += offset;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(pop_jump_if_nil)
-            {
-                if (pop_param().is_nil())
-                {
-                    auto offset = *reinterpret_cast<const int32_t*>(ip+1);
-                    ip += offset;
-                }
-                else
-                {
-                    ip += 5;
-                }
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(get_global)
-            {
-                auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-                push_param(g.global_value_slots[index]);
-                ip += 5;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(set_global)
-            {
-                auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-                g.global_value_slots[index] = param_top();
-                ip += 5;
-                PREDICT(pop);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(get_local)
-            {
-                PREDICTED(get_local);
-                auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-                push_param(m_locals[index]);
-                ip += 5;
-                PREDICT(push_value);
-                PREDICT(get_local);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(set_local)
-            {
-                PREDICTED(set_local)
-                auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-                m_locals[index] = param_top();
-                ip += 5;
-                PREDICT(pop);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(get_capture)
-            {
-                auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-                push_param(m_current_closure.as_object()->closure()->get_capture(index));
-                ip += 5;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(set_capture)
-            {
-                auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-                m_current_closure.as_object()->closure()->set_capture(index, param_top());
-                ip += 5;
-                PREDICT(pop);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(function_value)
-            {
-                auto obj = *reinterpret_cast<const Value*>(ip+1);
-                if (symbolp(obj))
-                {
-                    push_param(obj.as_object()->symbol()->function());
-                }
-                else
-                {
-                    push_param(obj);
-                }
-                ip += 1 + sizeof(obj);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(pop)
-            {
-                PREDICTED(pop);
-                pop_param();
-                ip += 1;
-                PREDICT(get_local);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(push_value)
-            {
-                PREDICTED(push_value);
-                auto val = *reinterpret_cast<const Value*>(ip+1);
-                push_param(val);
-                ip += 1 + sizeof(val);
-                PREDICT(funcall);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(push_nil)
-            {
-                push_param(Value::nil());
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(push_fixnum_0)
-            {
-                push_param(Value::wrap_fixnum(0));
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(push_fixnum_1)
-            {
-                push_param(Value::wrap_fixnum(1));
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(instantiate_closure)
-            {
-                auto function = *reinterpret_cast<const Function* const*>(ip+1);
-                auto instance = gc.alloc_object<Closure>(function);
-                push_param(instance); // push this first so GC won't free it from under us
-                auto closure = instance.as_object()->closure();
-                if (function->has_captures())
-                {
-
-                    auto const &cap_offsets = function->capture_offsets();
-                    for (size_t i = 0; i < cap_offsets.size(); ++i)
-                    {
-                        auto const &offs = cap_offsets[i];
-                        Closure_Reference *ref;
-                        if (offs.is_local)
-                        {
-                            ref = capture_closure_reference(m_locals + offs.index);
-                        }
-                        else
-                        {
-                            ref = m_current_closure.as_object()->closure()->get_reference(offs.index);
-                        }
-                        //printf("[%s] %d %p %s\n",
-                        //       offs.name.c_str(),
-                        //       offs.index,
-                        //       ref->location(),
-                        //       (ref->location() ? repr(ref->value()).c_str() : "#<nullptr>"));
-                        closure->capture_reference(i, ref);
-                    }
-                }
-                ip += 1 + sizeof(function);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(close_values)
-            {
-                auto n = *reinterpret_cast<const uint32_t*>(ip+1);
-
-                close_values(m_stack_top-n);
-
-                ip += 1 + sizeof(n);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(cons)
-            {
-                // Instead of popping twice, we use param_top(n) like this to serve as
-                // a GC guard because before the GC may trigger a run before the cons
-                // is allocated which may cause these values to be collected.
-                auto val = gc.cons(param_top(-1), param_top(0));
-                // THEN we pop the values after the cons is allocated.
-                pop_params(2);
-                push_param(val);
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(car)
-            {
-                auto o = pop_param();
-                if (o.is_nil())
-                {
-                    push_param(o);
-                }
-                else
-                {
-                    CHECK_CONS(o);
-                    push_param(car(o));
-                }
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(cdr)
-            {
-                auto o = pop_param();
-                if (o.is_nil())
-                {
-                    push_param(o);
-                }
-                else
-                {
-                    CHECK_CONS(o);
-                    push_param(cdr(o));
-                }
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(halt)
-            {
-                goto done;
-            }
-
-            DISPATCH(push_handler_case)
-            {
-                {
-                    auto how_many = *reinterpret_cast<const uint32_t*>(ip+1);
-                    auto branch = *reinterpret_cast<const uint32_t*>(ip+1+sizeof(how_many));
-                    std::vector<Signal_Handler> handlers;
-                    for (uint32_t i = 0; i < how_many; ++i)
-                    {
-                        auto tag = pop_param();
-                        auto handler = pop_param();
-                        handlers.push_back({tag, handler});
-                    }
-                    push_frame(ip + branch, 0);
-                    push_handler_case(std::move(handlers));
-                    ip += 1 + sizeof(how_many) + sizeof(branch);
-                }
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(raise_signal)
-            {
-                {
-                    GC_GUARD();
-                    // @Design, should we move the tag to be the first thing pushed since this just gets
-                    // turned into a FUNCALL? The only reason to have the tag here is for easy access.
-                    auto tag = pop_param();
-                    auto nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-                    signal_args = to_list(m_stack_top - nargs, nargs);
-                    signal_args = gc.cons(tag, signal_args);
-                    GC_UNGUARD();
-                }
-                raise_signal:
-                signal_raised_at_ip = ip;
-                //bytecode::disassemble_maybe_function(std::cout, "SIGNAL", ip);
-                Handler_Case restore;
-                Signal_Handler handler;
-                if (find_handler(first(signal_args), true, restore, handler))
-                {
-                    m_stack_top = restore.stack;
-                    m_call_frame_top = restore.frame;
-                    // By default signal_args includes the handler tag and a specific handler knows its
-                    // own tag because it is labeled as such. In the case of a handler with the T tag it
-                    // is unknown so we leave it, otherwise it is removed.
-                    if (handler.tag != g.s_T)
-                    {
-                        signal_args = cdr(signal_args);
-                    }
-                    func = handler.handler;
-                    nargs = 0;
-                    while (!signal_args.is_nil())
-                    {
-                        ++nargs;
-                        push_param(car(signal_args));
-                        signal_args = cdr(signal_args);
-                    }
-                    call_type = Call_Type::Doesnt_Push_Frame;
-                    goto do_funcall;
-                }
-                else
-                {
-                    auto top = m_call_frame_top;
-                    auto bottom = m_call_frame_bottom;
-                    m_call_frame_top = m_call_frame_bottom;
-                    m_stack_top = m_stack_bottom;
-                    throw Signal_Exception(signal_args, signal_raised_at_ip, top, bottom);
-                }
-            }
-
-            DISPATCH(eq)
-            {
-                auto b = pop_param();
-                auto a = pop_param();
-                if (a == b)
-                {
-                    push_param(g.s_T);
-                }
-                else if (a.is_type(Object_Type::System_Pointer) &&
-                         b.is_type(Object_Type::System_Pointer) &&
-                         (a.as_object()->system_pointer() == b.as_object()->system_pointer()))
-                {
-                    push_param(g.s_T);
-                }
-                else
-                {
-                    push_param(Value::nil());
-                }
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(rplaca)
-            {
-                auto b = pop_param();
-                auto a = param_top();
-                CHECK_CONS(a);
-                set_car(a, b);
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(rplacd)
-            {
-                auto b = pop_param();
-                auto a = param_top();
-                CHECK_CONS(a);
-                set_cdr(a, b);
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(aref)
-            {
-                auto subscript = pop_param();
-                CHECK_FIXNUM(subscript);
-                auto array_val = pop_param();
-                CHECK_SIMPLE_ARRAY(array_val);
-                auto array = array_val.as_object()->simple_array();
-                auto index = subscript.as_fixnum();
-                if (index < 0 || index >= array->size())
-                {
-                    signal_args = gc.list(g.s_INDEX_OUT_OF_BOUNDS_ERROR, subscript, array_val);
-                    goto raise_signal;
-                }
-                push_param(array->at(index));
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(aset)
-            {
-                auto value = pop_param();
-                auto subscript = pop_param();
-                CHECK_FIXNUM(subscript);
-                auto array_val = pop_param();
-                CHECK_SIMPLE_ARRAY(array_val);
-                auto array = array_val.as_object()->simple_array();
-                auto index = subscript.as_fixnum();
-                if (index < 0 || index >= array->size())
-                {
-                    signal_args = gc.list(g.s_INDEX_OUT_OF_BOUNDS_ERROR, subscript, array_val);
-                    goto raise_signal;
-                }
-                auto type = array->element_type();
-                if (type != g.s_T)
-                {
-                    if (type == g.s_FIXNUM && !value.is_fixnum())
-                    {
-                        CHECK_FIXNUM(value);
-                    }
-                    else if (type == g.s_CHARACTER && !value.is_character())
-                    {
-                        CHECK_CHARACTER(value);
-                    }
-                }
-                array->at(index) = value;
-                push_param(value);
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(debug_trap)
-            {
-                g.debugger.breaking = !param_top().is_nil();
-                if (g.debugger.breaking)
-                {
-                    g.debugger.command = Runtime_Globals::Debugger::Command::Step_Into;
-                }
-                else
-                {
-                    g.debugger.command = Runtime_Globals::Debugger::Command::Continue;
-                }
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(add)
-            {
-                /*
-                  This is a type deduction algorithm with minimal branching
-                  // good types
-                  int, int = 3
-                  flo, int = 6
-                  int, flo = 9
-                  flo, flo = 12
-
-                  // fail types
-                  no, no = 0
-                  int, no = 1
-                  flo, no = 4
-                  no, int = 2
-                  no, flo = 8
-                 */
-                auto b = pop_param();
-                auto a = pop_param();
-
-                char a_t = 0;
-                a_t += a.is_fixnum();
-                a_t += a.is_type(Object_Type::Float) * 4;
-
-                char b_t = 0;
-                b_t += b.is_fixnum() * 2;
-                b_t += b.is_type(Object_Type::Float) * 8;
-
-                char c_t = a_t + b_t;
-
-                if (c_t == 3)
-                {
-                    push_param(a + b);
-                }
-                else if (c_t == 6)
-                {
-                    Float f = b.as_fixnum();
-                    f += a.as_object()->to_float();
-                    push_param(gc.alloc_object<Float>(f));
-                }
-                else if (c_t == 9)
-                {
-                    Float f = a.as_fixnum();
-                    f += b.as_object()->to_float();
-                    push_param(gc.alloc_object<Float>(f));
-                }
-                else if (c_t == 12)
-                {
-                    Float f = a.as_object()->to_float();
-                    f += b.as_object()->to_float();
-                    push_param(gc.alloc_object<Float>(f));
-                }
-                else
-                {
-                    GC_GUARD();
-                    signal_args = gc.list(g.s_TYPE_ERROR, gc.list(g.s_OR, g.s_FIXNUM, g.s_FLOAT), a, b);
-                    GC_UNGUARD();
-                    goto raise_signal;
-                }
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(add_1)
-            {
-                if (param_top().is_fixnum())
-                {
-                    param_top() += Value::wrap_fixnum(1);
-                }
-                else if (param_top().is_type(Object_Type::Float))
-                {
-                    Float f = pop_param().as_object()->to_float();
-                    push_param(gc.alloc_object<Float>(f + 1.0));
-                }
-                ip += 1;
-                PREDICT(set_local);
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(sub)
-            {
-                /*
-                  This is a type deduction algorithm with minimal branching
-                  // good types
-                  int, int = 3
-                  flo, int = 6
-                  int, flo = 9
-                  flo, flo = 12
-
-                  // fail types
-                  no, no = 0
-                  int, no = 1
-                  flo, no = 4
-                  no, int = 2
-                  no, flo = 8
-                 */
-                auto b = pop_param();
-                auto a = pop_param();
-
-                char a_t = 0;
-                a_t += a.is_fixnum();
-                a_t += a.is_type(Object_Type::Float) * 4;
-
-                char b_t = 0;
-                b_t += b.is_fixnum() * 2;
-                b_t += b.is_type(Object_Type::Float) * 8;
-
-                char c_t = a_t + b_t;
-
-                if (c_t == 3)
-                {
-                    push_param(a - b);
-                }
-                else if (c_t == 6)
-                {
-                    Float f = b.as_fixnum();
-                    f -= a.as_object()->to_float();
-                    push_param(gc.alloc_object<Float>(f));
-                }
-                else if (c_t == 9)
-                {
-                    Float f = a.as_fixnum();
-                    f -= b.as_object()->to_float();
-                    push_param(gc.alloc_object<Float>(f));
-                }
-                else if (c_t == 12)
-                {
-                    Float f = a.as_object()->to_float();
-                    f -= b.as_object()->to_float();
-                    push_param(gc.alloc_object<Float>(f));
-                }
-                else
-                {
-                    GC_GUARD();
-                    signal_args = gc.list(g.s_TYPE_ERROR, gc.list(g.s_OR, g.s_FIXNUM, g.s_FLOAT), a, b);
-                    GC_UNGUARD();
-                    goto raise_signal;
-                }
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-
-            DISPATCH(sub_1)
-            {
-                if (param_top().is_fixnum())
-                {
-                    param_top() -= Value::wrap_fixnum(1);
-                }
-                else if (param_top().is_type(Object_Type::Float))
-                {
-                    Float f = pop_param().as_object()->to_float();
-                    push_param(gc.alloc_object<Float>(f - 1.0));
-                }
-                ip += 1;
-                DISPATCH_NEXT;
-            }
-        }
-    }
-    done:
-
-    return ip;
-}
-
 #undef TYPE_CHECK
 #define TYPE_CHECK(what, typecheck, expected)                   \
     do {                                                        \
@@ -1720,7 +352,7 @@ struct Function_Initializer
 
     std::string lisp_name;
     std::string cpp_name;
-    Package *package;
+    std::string package_name;
     Cpp_Function cpp_function;
     bool is_exported;
 };
@@ -1734,17 +366,7 @@ struct Function_Initializer_With_Defun
                                     Function_Initializer::Cpp_Function cpp_function,
                                     bool is_exported)
     {
-        auto package = g.packages.find_or_create(package_name);
-        g_function_initializers.push_back({lisp_name, cpp_name, package, cpp_function, is_exported});
-    }
-
-    Function_Initializer_With_Defun(const std::string &lisp_name,
-                                    const std::string &cpp_name,
-                                    Package *package,
-                                    Function_Initializer::Cpp_Function cpp_function,
-                                    bool is_exported)
-    {
-        g_function_initializers.push_back({lisp_name, cpp_name, package, cpp_function, is_exported});
+        g_function_initializers.push_back({lisp_name, cpp_name, package_name, cpp_function, is_exported});
     }
 };
 
@@ -1763,7 +385,7 @@ namespace primitives
 ///////////////////////////////////////////////////////////////////////
 // Internal Functions
 
-DEFUN("%PRINT", func_print, g.core(), false)
+DEFUN("%PRINT", func_print, g.core_str(), false)
 {
     for (uint32_t i = 0; i < nargs; ++i)
     {
@@ -1773,7 +395,7 @@ DEFUN("%PRINT", func_print, g.core(), false)
     return Value::nil();
 }
 
-DEFUN("%DISASSEMBLE", func_disassemble, g.kernel(), false)
+DEFUN("%DISASSEMBLE", func_disassemble, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     auto expr = args[0];
@@ -1822,7 +444,7 @@ DEFUN("%DISASSEMBLE", func_disassemble, g.kernel(), false)
     return Value::nil();
 }
 
-DEFUN("%DEFINE-FUNCTION", func_define_function, g.kernel(), false)
+DEFUN("%DEFINE-FUNCTION", func_define_function, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(2);
     auto sym = args[0];
@@ -1900,7 +522,7 @@ bool check_package(Value &arg, Package **out_pkg, Value &out_signal_args)
     return false;
 }
 
-DEFUN("%PACKAGE-NAME", func_package_name, g.kernel(), false)
+DEFUN("%PACKAGE-NAME", func_package_name, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     Package *package = nullptr;
@@ -1925,7 +547,7 @@ DEFUN("%PACKAGE-NAME", func_package_name, g.kernel(), false)
     return gc.alloc_string(args[0].as_object()->package()->name());
 }
 
-DEFUN("%MAKE-PACKAGE", func_make_package, g.kernel(), false)
+DEFUN("%MAKE-PACKAGE", func_make_package, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     std::string package_name;
@@ -1953,7 +575,7 @@ DEFUN("%MAKE-PACKAGE", func_make_package, g.kernel(), false)
     return package->as_lisp_value();
 }
 
-DEFUN("%FIND-PACKAGE", func_find_package, g.kernel(), false)
+DEFUN("%FIND-PACKAGE", func_find_package, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     std::string package_name;
@@ -1970,7 +592,7 @@ DEFUN("%FIND-PACKAGE", func_find_package, g.kernel(), false)
     return pkg ? pkg->as_lisp_value() : Value::nil();
 }
 
-DEFUN("%USE-PACKAGE", func_use_package, g.kernel(), false)
+DEFUN("%USE-PACKAGE", func_use_package, g.kernel_str(), false)
 {
     CHECK_NARGS_AT_LEAST(1);
 
@@ -2020,7 +642,7 @@ DEFUN("%USE-PACKAGE", func_use_package, g.kernel(), false)
     return g.s_T;
 }
 
-DEFUN("%IN-PACKAGE", func_in_package, g.kernel(), false)
+DEFUN("%IN-PACKAGE", func_in_package, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
 
@@ -2062,7 +684,7 @@ DEFUN("%IN-PACKAGE", func_in_package, g.kernel(), false)
     return package_to_use->as_lisp_value();
 }
 
-DEFUN("%+", func_plus, g.kernel(), false)
+DEFUN("%+", func_plus, g.kernel_str(), false)
 {
     /***
         (+ &rest fixnums)
@@ -2102,7 +724,7 @@ DEFUN("%+", func_plus, g.kernel(), false)
     }
 }
 
-DEFUN("%-", func_minus, g.kernel(), false)
+DEFUN("%-", func_minus, g.kernel_str(), false)
 {
     /***
         (- &rest fixnums)
@@ -2181,7 +803,7 @@ DEFUN("%-", func_minus, g.kernel(), false)
     }
 }
 
-DEFUN("%*", func_multiply, g.kernel(), false)
+DEFUN("%*", func_multiply, g.kernel_str(), false)
 {
     /***
         (* &rest fixnums)
@@ -2220,7 +842,7 @@ DEFUN("%*", func_multiply, g.kernel(), false)
     }
 }
 
-DEFUN("%/", func_divide, g.kernel(), false)
+DEFUN("%/", func_divide, g.kernel_str(), false)
 {
     /***
         (/ x y)
@@ -2271,7 +893,7 @@ DEFUN("%/", func_divide, g.kernel(), false)
     }
 }
 
-DEFUN("%FLOAT-STRING", func_float_string, g.kernel(), false)
+DEFUN("%FLOAT-STRING", func_float_string, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     Float f;
@@ -2301,7 +923,7 @@ DEFUN("%FLOAT-STRING", func_float_string, g.kernel(), false)
     return gc.alloc_string(result_str);
 }
 
-DEFUN("%FLOAT-COMPONENTS", func_float_components, g.kernel(), false)
+DEFUN("%FLOAT-COMPONENTS", func_float_components, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     union {
@@ -2328,7 +950,7 @@ DEFUN("%FLOAT-COMPONENTS", func_float_components, g.kernel(), false)
     return gc.list((negp ? g.s_T : Value::nil()), Value::wrap_fixnum(expt), Value::wrap_fixnum(mant));
 }
 
-DEFUN("%FLOOR", func_floor, g.kernel(), false)
+DEFUN("%FLOOR", func_floor, g.kernel_str(), false)
 {
     CHECK_NARGS_AT_LEAST(1);
     if (nargs == 1)
@@ -2382,7 +1004,7 @@ DEFUN("%FLOOR", func_floor, g.kernel(), false)
     }
 }
 
-DEFUN("%FLOAT-DIVIDE", func_float_divide, g.kernel(), false)
+DEFUN("%FLOAT-DIVIDE", func_float_divide, g.kernel_str(), false)
 {
     /***
         (float-divide x y)
@@ -2418,7 +1040,7 @@ DEFUN("%FLOAT-DIVIDE", func_float_divide, g.kernel(), false)
     return gc.alloc_object<Float>(x / y);
 }
 
-DEFUN("%=", func_num_equal, g.kernel(), false)
+DEFUN("%=", func_num_equal, g.kernel_str(), false)
 {
     /***
         (= n &rest more-fixnums)
@@ -2479,7 +1101,7 @@ DEFUN("%=", func_num_equal, g.kernel(), false)
     }
 }
 
-DEFUN("%<", func_num_less, g.kernel(), false)
+DEFUN("%<", func_num_less, g.kernel_str(), false)
 {
     /***
         (< a b &rest more-fixnums)
@@ -2568,7 +1190,7 @@ DEFUN("%<", func_num_less, g.kernel(), false)
     }
 }
 
-DEFUN("%>", func_num_greater, g.kernel(), false)
+DEFUN("%>", func_num_greater, g.kernel_str(), false)
 {
     /***
         (> a b &rest more-fixnums)
@@ -2657,7 +1279,7 @@ DEFUN("%>", func_num_greater, g.kernel(), false)
     }
 }
 
-DEFUN("%FILE-TELLG", func_file_tellg, g.kernel(), false)
+DEFUN("%FILE-TELLG", func_file_tellg, g.kernel_str(), false)
 {
     /***
         (file-tellg stream)
@@ -2669,7 +1291,7 @@ DEFUN("%FILE-TELLG", func_file_tellg, g.kernel(), false)
     return Value::wrap_fixnum(pos);
 }
 
-DEFUN("%FILE-SEEKG", func_file_seekg, g.kernel(), false)
+DEFUN("%FILE-SEEKG", func_file_seekg, g.kernel_str(), false)
 {
     /***
         (file-seekg stream offset dir)
@@ -2707,7 +1329,7 @@ DEFUN("%FILE-SEEKG", func_file_seekg, g.kernel(), false)
     return Value::nil();
 }
 
-DEFUN("%FILE-WRITE", func_file_write, g.kernel(), false)
+DEFUN("%FILE-WRITE", func_file_write, g.kernel_str(), false)
 {
     /***
         (file-write stream object)
@@ -2723,7 +1345,7 @@ DEFUN("%FILE-WRITE", func_file_write, g.kernel(), false)
     return Value::wrap_fixnum(bytes_written);
 }
 
-DEFUN("%FILE-PUTCHAR", func_file_putchar, g.kernel(), false)
+DEFUN("%FILE-PUTCHAR", func_file_putchar, g.kernel_str(), false)
 {
     /***
         (file-putchar stream character)
@@ -2742,7 +1364,7 @@ DEFUN("%FILE-PUTCHAR", func_file_putchar, g.kernel(), false)
     return Value::wrap_fixnum(bytes_written);
 }
 
-DEFUN("%FILE-PUTS", func_file_puts, g.kernel(), false)
+DEFUN("%FILE-PUTS", func_file_puts, g.kernel_str(), false)
 {
     /***
         (file-puts stream string)
@@ -2759,7 +1381,7 @@ DEFUN("%FILE-PUTS", func_file_puts, g.kernel(), false)
     return Value::wrap_fixnum(bytes_written);
 }
 
-DEFUN("%TYPE-OF", func_type_of, g.kernel(), false)
+DEFUN("%TYPE-OF", func_type_of, g.kernel_str(), false)
 {
     /***
         (type-of object)
@@ -2818,7 +1440,7 @@ DEFUN("%TYPE-OF", func_type_of, g.kernel(), false)
     return res;
 }
 
-DEFUN("%READ", func_read, g.kernel(), false)
+DEFUN("%READ", func_read, g.kernel_str(), false)
 {
     /***
         (read &optional file-stream eof-error-p eof-value)
@@ -2868,7 +1490,7 @@ DEFUN("%READ", func_read, g.kernel(), false)
     }
 }
 
-DEFUN("%MACRO-EXPAND", func_macro_expand, g.kernel(), false)
+DEFUN("%MACRO-EXPAND", func_macro_expand, g.kernel_str(), false)
 {
     /***
         (macro-expand expr)
@@ -2877,7 +1499,7 @@ DEFUN("%MACRO-EXPAND", func_macro_expand, g.kernel(), false)
     return macro_expand_impl(args[0], *THE_LISP_VM);
 }
 
-DEFUN("%MACRO-EXPAND1", func_macro_expand1, g.kernel(), false)
+DEFUN("%MACRO-EXPAND1", func_macro_expand1, g.kernel_str(), false)
 {
     /***
         (macro-expand1 expr)
@@ -2887,7 +1509,7 @@ DEFUN("%MACRO-EXPAND1", func_macro_expand1, g.kernel(), false)
     return macro_expand_impl(args[0], *THE_LISP_VM, just_one);
 }
 
-DEFUN("%EVAL", func_eval, g.kernel(), false)
+DEFUN("%EVAL", func_eval, g.kernel_str(), false)
 {
     /***
         (eval expr)
@@ -2928,7 +1550,7 @@ DEFUN("%EVAL", func_eval, g.kernel(), false)
     return result;
 }
 
-DEFUN("%GENSYM", func_gensym, g.kernel(), false)
+DEFUN("%GENSYM", func_gensym, g.kernel_str(), false)
 {
     /***
         (gensym &optional hint)
@@ -2950,7 +1572,7 @@ DEFUN("%GENSYM", func_gensym, g.kernel(), false)
     return gc.alloc_object<Symbol>(sym_name);
 }
 
-DEFUN("%MAKE-SYMBOL", func_make_symbol, g.kernel(), false)
+DEFUN("%MAKE-SYMBOL", func_make_symbol, g.kernel_str(), false)
 {
     /***
         (make-symbol symbol-name)
@@ -2967,7 +1589,7 @@ DEFUN("%MAKE-SYMBOL", func_make_symbol, g.kernel(), false)
     return gc.alloc_object<Symbol>(name);
 }
 
-DEFUN("%SYMBOL-NAME", func_symbol_name, g.kernel(), false)
+DEFUN("%SYMBOL-NAME", func_symbol_name, g.kernel_str(), false)
 {
     /***
         (symbol-name symbol)
@@ -2977,7 +1599,7 @@ DEFUN("%SYMBOL-NAME", func_symbol_name, g.kernel(), false)
     return gc.alloc_string(args[0].as_object()->symbol()->name());
 }
 
-DEFUN("%SYMBOL-PACKAGE", func_symbol_package, g.kernel(), false)
+DEFUN("%SYMBOL-PACKAGE", func_symbol_package, g.kernel_str(), false)
 {
     /***
         (symbol-name symbol)
@@ -2988,7 +1610,7 @@ DEFUN("%SYMBOL-PACKAGE", func_symbol_package, g.kernel(), false)
     return pkg ? pkg->as_lisp_value() : Value::nil();
 }
 
-DEFUN("%EXPORT", func_export, g.kernel(), false)
+DEFUN("%EXPORT", func_export, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(2);
     auto package = g.packages.current();
@@ -3022,7 +1644,7 @@ DEFUN("%EXPORT", func_export, g.kernel(), false)
     return g.s_T;
 }
 
-DEFUN("%IMPORT", func_import, g.kernel(), false)
+DEFUN("%IMPORT", func_import, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(2);
     Package *package = nullptr;
@@ -3056,7 +1678,7 @@ DEFUN("%IMPORT", func_import, g.kernel(), false)
     return g.s_T;
 }
 
-DEFUN("%INTERN", func_intern, g.kernel(), false)
+DEFUN("%INTERN", func_intern, g.kernel_str(), false)
 {
     /***
         (intern symbol-name &optional package)
@@ -3095,7 +1717,7 @@ DEFUN("%INTERN", func_intern, g.kernel(), false)
     return sym;
 }
 
-DEFUN("%FIND-SYMBOL", func_find_symbol, g.kernel(), false)
+DEFUN("%FIND-SYMBOL", func_find_symbol, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(2);
     Package *package = nullptr;
@@ -3136,7 +1758,7 @@ DEFUN("%FIND-SYMBOL", func_find_symbol, g.kernel(), false)
 }
 
 
-DEFUN("%EXIT", func_exit, g.kernel(), false)
+DEFUN("%EXIT", func_exit, g.kernel_str(), false)
 {
     /***
         (exit &optional n)
@@ -3150,7 +1772,7 @@ DEFUN("%EXIT", func_exit, g.kernel(), false)
     exit(code);
 }
 
-DEFUN("%SIGNAL", func_signal, g.kernel(), false)
+DEFUN("%SIGNAL", func_signal, g.kernel_str(), false)
 {
     /***
         (signal tag &rest args)
@@ -3160,7 +1782,7 @@ DEFUN("%SIGNAL", func_signal, g.kernel(), false)
     return to_list(args, nargs);
 }
 
-DEFUN("%MAKE-ARRAY", func_make_array, g.kernel(), false)
+DEFUN("%MAKE-ARRAY", func_make_array, g.kernel_str(), false)
 {
     /***
         (make-array length type fill-pointer)
@@ -3178,7 +1800,7 @@ DEFUN("%MAKE-ARRAY", func_make_array, g.kernel(), false)
     return gc.alloc_object<Simple_Array>(g.s_T, length.as_fixnum(), fill_pointer.as_fixnum());
 }
 
-DEFUN("%ARRAY-PUSH-BACK", func_array_push_back, g.kernel(), false)
+DEFUN("%ARRAY-PUSH-BACK", func_array_push_back, g.kernel_str(), false)
 {
     /***
         (array-push-back array value)
@@ -3205,7 +1827,7 @@ DEFUN("%ARRAY-PUSH-BACK", func_array_push_back, g.kernel(), false)
     return value;
 }
 
-DEFUN("%ARRAY-CAPACITY", func_array_capacity, g.kernel(), false)
+DEFUN("%ARRAY-CAPACITY", func_array_capacity, g.kernel_str(), false)
 {
     /***
         (array-capacity array)
@@ -3217,7 +1839,7 @@ DEFUN("%ARRAY-CAPACITY", func_array_capacity, g.kernel(), false)
     return Value::wrap_fixnum(array.as_object()->simple_array()->capacity());
 }
 
-DEFUN("%ARRAY-LENGTH", func_array_length, g.kernel(), false)
+DEFUN("%ARRAY-LENGTH", func_array_length, g.kernel_str(), false)
 {
     /***
         (array-length array)
@@ -3229,7 +1851,7 @@ DEFUN("%ARRAY-LENGTH", func_array_length, g.kernel(), false)
     return Value::wrap_fixnum(array.as_object()->simple_array()->size());
 }
 
-DEFUN("%ARRAY-TYPE", func_array_type, g.kernel(), false)
+DEFUN("%ARRAY-TYPE", func_array_type, g.kernel_str(), false)
 {
     /***
         (array-type array)
@@ -3241,7 +1863,7 @@ DEFUN("%ARRAY-TYPE", func_array_type, g.kernel(), false)
     return array.as_object()->simple_array()->element_type();
 }
 
-DEFUN("%BITS-OF", func_bits_of, g.kernel(), false)
+DEFUN("%BITS-OF", func_bits_of, g.kernel_str(), false)
 {
     /***
         (bits-of object)
@@ -3260,7 +1882,7 @@ DEFUN("%BITS-OF", func_bits_of, g.kernel(), false)
     return ret;
 }
 
-DEFUN("%CODE-CHAR", func_code_char, g.kernel(), false)
+DEFUN("%CODE-CHAR", func_code_char, g.kernel_str(), false)
 {
     /***
         (code-char integer)
@@ -3271,7 +1893,7 @@ DEFUN("%CODE-CHAR", func_code_char, g.kernel(), false)
     return Value::wrap_character(char_code);
 }
 
-DEFUN("%CHAR-CODE", func_char_code, g.kernel(), false)
+DEFUN("%CHAR-CODE", func_char_code, g.kernel_str(), false)
 {
     /***
         (char-code character)
@@ -3300,7 +1922,7 @@ std::ios_base::openmode get_mode(Value v)
     return static_cast<std::ios_base::openmode>(0);
 }
 
-DEFUN("%OPEN", func_open, g.kernel(), false)
+DEFUN("%OPEN", func_open, g.kernel_str(), false)
 {
     /***
         (open file-path direction)
@@ -3334,7 +1956,7 @@ DEFUN("%OPEN", func_open, g.kernel(), false)
     return Value::nil();
 }
 
-DEFUN("%CLOSE", func_close, g.kernel(), false)
+DEFUN("%CLOSE", func_close, g.kernel_str(), false)
 {
     /***
         (close file-stream)
@@ -3346,7 +1968,7 @@ DEFUN("%CLOSE", func_close, g.kernel(), false)
     return g.s_T;
 }
 
-DEFUN("%FILE-PATH", func_file_path, g.kernel(), false)
+DEFUN("%FILE-PATH", func_file_path, g.kernel_str(), false)
 {
     /***
         (file-path file-stream)
@@ -3356,7 +1978,7 @@ DEFUN("%FILE-PATH", func_file_path, g.kernel(), false)
     return gc.alloc_string(it.as_object()->file_stream()->path());
 }
 
-DEFUN("%FILE-OK-P", func_file_ok_p, g.kernel(), false)
+DEFUN("%FILE-OK-P", func_file_ok_p, g.kernel_str(), false)
 {
     /***
         (file-ok-p file-stream)
@@ -3368,7 +1990,7 @@ DEFUN("%FILE-OK-P", func_file_ok_p, g.kernel(), false)
     return it.as_object()->file_stream()->stream().good() ? g.s_T : Value::nil();
 }
 
-DEFUN("%FILE-EOF-P", func_file_eof_p, g.kernel(), false)
+DEFUN("%FILE-EOF-P", func_file_eof_p, g.kernel_str(), false)
 {
     /***
         (file-eof-p file-stream)
@@ -3380,7 +2002,7 @@ DEFUN("%FILE-EOF-P", func_file_eof_p, g.kernel(), false)
     return it.as_object()->file_stream()->stream().eof() ? g.s_T : Value::nil();
 }
 
-DEFUN("%FILE-MODE", func_file_mode, g.kernel(), false)
+DEFUN("%FILE-MODE", func_file_mode, g.kernel_str(), false)
 {
     /***
         (file-mode file-stream)
@@ -3405,7 +2027,7 @@ DEFUN("%FILE-MODE", func_file_mode, g.kernel(), false)
     return to_list(vals);
 }
 
-DEFUN("%FILE-FLUSH", func_file_flush, g.kernel(), false)
+DEFUN("%FILE-FLUSH", func_file_flush, g.kernel_str(), false)
 {
     /***
         (file-flush file-stream)
@@ -3417,7 +2039,7 @@ DEFUN("%FILE-FLUSH", func_file_flush, g.kernel(), false)
     return g.s_T;
 }
 
-DEFUN("%FILE-READ-BYTE", func_file_read_byte, g.kernel(), false)
+DEFUN("%FILE-READ-BYTE", func_file_read_byte, g.kernel_str(), false)
 {
     /***
         (file-read-byte file-stream)
@@ -3434,7 +2056,7 @@ DEFUN("%FILE-READ-BYTE", func_file_read_byte, g.kernel(), false)
     return Value::wrap_fixnum(stm.get());
 }
 
-DEFUN("%FILE-PEEK-BYTE", func_file_peek_byte, g.kernel(), false)
+DEFUN("%FILE-PEEK-BYTE", func_file_peek_byte, g.kernel_str(), false)
 {
     /***
         (file-peek-byte file-stream)
@@ -3451,7 +2073,7 @@ DEFUN("%FILE-PEEK-BYTE", func_file_peek_byte, g.kernel(), false)
     return Value::wrap_fixnum(stm.peek());
 }
 
-DEFUN("%FILE-PEEK-CHARACTER", func_file_peek_character, g.kernel(), false)
+DEFUN("%FILE-PEEK-CHARACTER", func_file_peek_character, g.kernel_str(), false)
 {
     /***
         (file-peek-character file-stream)
@@ -3468,7 +2090,7 @@ DEFUN("%FILE-PEEK-CHARACTER", func_file_peek_character, g.kernel(), false)
     return Value::wrap_character(fs->peek_character());
 }
 
-DEFUN("%FILE-READ-CHARACTER", func_file_read_character, g.kernel(), false)
+DEFUN("%FILE-READ-CHARACTER", func_file_read_character, g.kernel_str(), false)
 {
     /***
         (file-read-character file-stream)
@@ -3485,7 +2107,7 @@ DEFUN("%FILE-READ-CHARACTER", func_file_read_character, g.kernel(), false)
     return Value::wrap_character(fs->read_character());
 }
 
-DEFUN("%FUNCTION-DEFINITION", func_function_definition, g.kernel(), false)
+DEFUN("%FUNCTION-DEFINITION", func_function_definition, g.kernel_str(), false)
 {
     /***
         (function-definition symbol)
@@ -3496,7 +2118,7 @@ DEFUN("%FUNCTION-DEFINITION", func_function_definition, g.kernel(), false)
     return sym.as_object()->symbol()->function();
 }
 
-DEFUN("%STRUCTURE-DEFINITION", func_structure_definition, g.kernel(), false)
+DEFUN("%STRUCTURE-DEFINITION", func_structure_definition, g.kernel_str(), false)
 {
     /***
         (structure-definition object)
@@ -3506,7 +2128,7 @@ DEFUN("%STRUCTURE-DEFINITION", func_structure_definition, g.kernel(), false)
     return args[0].as_object()->structure()->type();
 }
 
-DEFUN("%CREATE-INSTANCE", func_create_instance, g.kernel(), false)
+DEFUN("%CREATE-INSTANCE", func_create_instance, g.kernel_str(), false)
 {
     /***
         (create-instance type &rest slots)
@@ -3524,7 +2146,7 @@ DEFUN("%CREATE-INSTANCE", func_create_instance, g.kernel(), false)
     return instance_val;
 }
 
-DEFUN("%GET-SLOT", func_get_slot, g.kernel(), false)
+DEFUN("%GET-SLOT", func_get_slot, g.kernel_str(), false)
 {
     /***
         (get-slot object n)
@@ -3536,7 +2158,7 @@ DEFUN("%GET-SLOT", func_get_slot, g.kernel(), false)
     return args[0].as_object()->structure()->slot_value(index);
 }
 
-DEFUN("%SET-SLOT", func_set_slot, g.kernel(), false)
+DEFUN("%SET-SLOT", func_set_slot, g.kernel_str(), false)
 {
     /***
         (set-slot object n value)
@@ -3550,56 +2172,56 @@ DEFUN("%SET-SLOT", func_set_slot, g.kernel(), false)
     return value;
 }
 
-DEFUN("%GC-PAUSE", func_gc_pause, g.kernel(), false)
+DEFUN("%GC-PAUSE", func_gc_pause, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(0);
     return gc.pause() ? g.s_T : Value::nil();
 }
 
-DEFUN("%GC-PAUSED-P", func_gc_paused_p, g.kernel(), false)
+DEFUN("%GC-PAUSED-P", func_gc_paused_p, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(0);
     return gc.paused() ? g.s_T : Value::nil();
 }
 
-DEFUN("%GC-SET-PAUSED", func_gc_set_paused, g.kernel(), false)
+DEFUN("%GC-SET-PAUSED", func_gc_set_paused, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     gc.set_paused(!args[0].is_nil());
     return args[0];
 }
 
-DEFUN("%GC-COLLECT", func_gc_collect, g.kernel(), false)
+DEFUN("%GC-COLLECT", func_gc_collect, g.kernel_str(), false)
 {
     return Value::wrap_fixnum(gc.mark_and_sweep());
 }
 
-DEFUN("%GC-GET-CONSED", func_gc_get_consed, g.kernel(), false)
+DEFUN("%GC-GET-CONSED", func_gc_get_consed, g.kernel_str(), false)
 {
     return Value::wrap_fixnum(gc.get_consed());
 }
 
-DEFUN("%GC-GET-FREED", func_gc_get_freed, g.kernel(), false)
+DEFUN("%GC-GET-FREED", func_gc_get_freed, g.kernel_str(), false)
 {
     return Value::wrap_fixnum(gc.get_freed());
 }
 
-DEFUN("%GC-GET-TIME-SPENT-IN-GC", func_gc_get_time_spent_in_gc, g.kernel(), false)
+DEFUN("%GC-GET-TIME-SPENT-IN-GC", func_gc_get_time_spent_in_gc, g.kernel_str(), false)
 {
     return Value::wrap_fixnum(gc.get_time_spent_in_gc());
 }
 
-DEFUN("%GC-GET-TIMES-GC-HAS-RUN", func_gc_get_times_gc_has_run, g.kernel(), false)
+DEFUN("%GC-GET-TIMES-GC-HAS-RUN", func_gc_get_times_gc_has_run, g.kernel_str(), false)
 {
     return Value::wrap_fixnum(gc.get_times_gc_has_run());
 }
 
-DEFUN("%GC-GET-COLLECT-THRESHOLD", func_gc_get_collect_threshold, g.kernel(), false)
+DEFUN("%GC-GET-COLLECT-THRESHOLD", func_gc_get_collect_threshold, g.kernel_str(), false)
 {
     return Value::wrap_fixnum(gc.get_collect_threshold());
 }
 
-DEFUN("%GC-SET-COLLECT-THRESHOLD", func_gc_set_collect_threshold, g.kernel(), false)
+DEFUN("%GC-SET-COLLECT-THRESHOLD", func_gc_set_collect_threshold, g.kernel_str(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     CHECK_FIXNUM(args[0]);
@@ -3610,7 +2232,7 @@ DEFUN("%GC-SET-COLLECT-THRESHOLD", func_gc_set_collect_threshold, g.kernel(), fa
 ///////////////////////////////////////////////////////////////////////
 // Exported Functions
 
-DEFUN("BIT-NOT", func_bit_not, g.kernel(), true)
+DEFUN("BIT-NOT", func_bit_not, g.kernel_str(), true)
 {
     /***
         (bit-not x)
@@ -3621,7 +2243,7 @@ DEFUN("BIT-NOT", func_bit_not, g.kernel(), true)
     return Value::wrap_fixnum(~x);
 }
 
-DEFUN("BIT-AND", func_bit_and, g.kernel(), true)
+DEFUN("BIT-AND", func_bit_and, g.kernel_str(), true)
 {
     /***
         (bit-and x y)
@@ -3634,7 +2256,7 @@ DEFUN("BIT-AND", func_bit_and, g.kernel(), true)
     return Value::wrap_fixnum(x & y);
 }
 
-DEFUN("BIT-IOR", func_bit_ior, g.kernel(), true)
+DEFUN("BIT-IOR", func_bit_ior, g.kernel_str(), true)
 {
     /***
         (bit-or x y &rest z)
@@ -3652,7 +2274,7 @@ DEFUN("BIT-IOR", func_bit_ior, g.kernel(), true)
     return res;
 }
 
-DEFUN("BIT-XOR", func_bit_xor, g.kernel(), true)
+DEFUN("BIT-XOR", func_bit_xor, g.kernel_str(), true)
 {
     /***
         (bit-xor x y)
@@ -3665,7 +2287,7 @@ DEFUN("BIT-XOR", func_bit_xor, g.kernel(), true)
     return Value::wrap_fixnum(x ^ y);
 }
 
-DEFUN("BIT-SHIFT", func_bit_shift, g.kernel(), true)
+DEFUN("BIT-SHIFT", func_bit_shift, g.kernel_str(), true)
 {
     /***
         (bit-shift integer count)
@@ -3682,7 +2304,7 @@ DEFUN("BIT-SHIFT", func_bit_shift, g.kernel(), true)
     return Value::wrap_fixnum(integer >> -count);
 }
 
-DEFUN("GET-WORKING-DIRECTORY", func_get_working_directory, g.core(), true)
+DEFUN("GET-WORKING-DIRECTORY", func_get_working_directory, g.core_str(), true)
 {
     /***
         (get-working-directory)
@@ -3692,7 +2314,7 @@ DEFUN("GET-WORKING-DIRECTORY", func_get_working_directory, g.core(), true)
     return error.value() != 0 ? Value::nil() : gc.alloc_string(current_path);
 }
 
-DEFUN("CHANGE-DIRECTORY", func_change_directory, g.core(), true)
+DEFUN("CHANGE-DIRECTORY", func_change_directory, g.core_str(), true)
 {
     /***
         (change-directory path)
@@ -3712,7 +2334,7 @@ DEFUN("CHANGE-DIRECTORY", func_change_directory, g.core(), true)
     return error.value() != 0 ? Value::nil() : gc.alloc_string(current_path);
 }
 
-DEFUN("GET-EXECUTABLE-PATH", func_get_executable_path, g.core(), true)
+DEFUN("GET-EXECUTABLE-PATH", func_get_executable_path, g.core_str(), true)
 {
     /***
         (get-executable-path)
@@ -3721,7 +2343,7 @@ DEFUN("GET-EXECUTABLE-PATH", func_get_executable_path, g.core(), true)
     return gc.alloc_string(plat::get_executable_path());
 }
 
-DEFUN("GET-CLOCK-TICKS", func_get_clock_ticks, g.core(), true)
+DEFUN("GET-CLOCK-TICKS", func_get_clock_ticks, g.core_str(), true)
 {
     /***
         (get-clock-ticks)
@@ -3733,7 +2355,7 @@ DEFUN("GET-CLOCK-TICKS", func_get_clock_ticks, g.core(), true)
     return Value::wrap_fixnum(microseconds.count());
 }
 
-DEFUN("CLOCKS-PER-SECOND", func_clocks_per_second, g.core(), true)
+DEFUN("CLOCKS-PER-SECOND", func_clocks_per_second, g.core_str(), true)
 {
     /***
         (clocks-per-second)
@@ -3742,7 +2364,7 @@ DEFUN("CLOCKS-PER-SECOND", func_clocks_per_second, g.core(), true)
     return Value::wrap_fixnum(1000000); // @FIXME use something better than costant number
 }
 
-DEFUN("OPERATING-SYSTEM", func_operating_system, g.core(), true)
+DEFUN("OPERATING-SYSTEM", func_operating_system, g.core_str(), true)
 {
     /***
         (operating-system)
@@ -3795,7 +2417,7 @@ bool ffi_try_marshal(Value val, void **out_ptr)
     return false;
 }
 
-DEFUN("ERRNO", func_errno, g.kernel(), true)
+DEFUN("ERRNO", func_errno, g.kernel_str(), true)
 {
     /***
         (errno)
@@ -3803,7 +2425,7 @@ DEFUN("ERRNO", func_errno, g.kernel(), true)
     return Value::wrap_fixnum(errno);
 }
 
-DEFUN("ERRNO-STR", func_errno_str, g.kernel(), true)
+DEFUN("ERRNO-STR", func_errno_str, g.kernel_str(), true)
 {
     /***
         (errno-str)
@@ -3816,7 +2438,7 @@ DEFUN("ERRNO-STR", func_errno_str, g.kernel(), true)
     return gc.alloc_string(strerror(errno));
 }
 
-DEFUN("FFI-MACHINE-POINTER-SIZE", func_ffi_machine_pointer_size, g.kernel(), true)
+DEFUN("FFI-MACHINE-POINTER-SIZE", func_ffi_machine_pointer_size, g.kernel_str(), true)
 {
     /***
         (ffi-machine-pointer-size)
@@ -3824,7 +2446,7 @@ DEFUN("FFI-MACHINE-POINTER-SIZE", func_ffi_machine_pointer_size, g.kernel(), tru
     return Value::wrap_fixnum(sizeof(void*));
 }
 
-DEFUN("FFI-OPEN", func_ffi_open, g.kernel(), true)
+DEFUN("FFI-OPEN", func_ffi_open, g.kernel_str(), true)
 {
     /***
         (ffi-open dll-path)
@@ -3837,7 +2459,7 @@ DEFUN("FFI-OPEN", func_ffi_open, g.kernel(), true)
     return handle ? gc.alloc_object<System_Pointer>(handle) : Value::nil();
 }
 
-DEFUN("FFI-CLOSE", func_ffi_close, g.kernel(), true)
+DEFUN("FFI-CLOSE", func_ffi_close, g.kernel_str(), true)
 {
     /***
         (ffi-close dll-handle)
@@ -3848,7 +2470,7 @@ DEFUN("FFI-CLOSE", func_ffi_close, g.kernel(), true)
     return Value::nil();
 }
 
-DEFUN("FFI-GET-SYMBOL", func_ffi_get_symbol, g.kernel(), true)
+DEFUN("FFI-GET-SYMBOL", func_ffi_get_symbol, g.kernel_str(), true)
 {
     /***
         (ffi-get-symbol dll-handle symbol-name)
@@ -3865,7 +2487,7 @@ DEFUN("FFI-GET-SYMBOL", func_ffi_get_symbol, g.kernel(), true)
     return ptr ? gc.alloc_object<System_Pointer>(ptr) : Value::nil();
 }
 
-DEFUN("FFI-CALL", func_ffi_call, g.kernel(), true)
+DEFUN("FFI-CALL", func_ffi_call, g.kernel_str(), true)
 {
     /***
         (ffi-call c-function &rest args)
@@ -3894,7 +2516,7 @@ DEFUN("FFI-CALL", func_ffi_call, g.kernel(), true)
     return gc.alloc_object<System_Pointer>(result);
 }
 
-DEFUN("FFI-NULLPTR", func_ffi_nullptr, g.kernel(), true)
+DEFUN("FFI-NULLPTR", func_ffi_nullptr, g.kernel_str(), true)
 {
     /***
         (ffi-nullptr)
@@ -3903,7 +2525,7 @@ DEFUN("FFI-NULLPTR", func_ffi_nullptr, g.kernel(), true)
     return gc.alloc_object<System_Pointer>(nullptr);
 }
 
-DEFUN("FFI-ALLOC", func_ffi_alloc, g.kernel(), true)
+DEFUN("FFI-ALLOC", func_ffi_alloc, g.kernel_str(), true)
 {
     /***
         (ffi-alloc size)
@@ -3914,7 +2536,7 @@ DEFUN("FFI-ALLOC", func_ffi_alloc, g.kernel(), true)
     return gc.alloc_object<System_Pointer>(ffi::alloc_mem(size));
 }
 
-DEFUN("FFI-ZERO-ALLOC", func_ffi_zero_alloc, g.kernel(), true)
+DEFUN("FFI-ZERO-ALLOC", func_ffi_zero_alloc, g.kernel_str(), true)
 {
     /***
         (ffi-zero-alloc size)
@@ -3925,7 +2547,7 @@ DEFUN("FFI-ZERO-ALLOC", func_ffi_zero_alloc, g.kernel(), true)
     return gc.alloc_object<System_Pointer>(ffi::calloc_mem(size));
 }
 
-DEFUN("FFI-FREE", func_ffi_free, g.kernel(), true)
+DEFUN("FFI-FREE", func_ffi_free, g.kernel_str(), true)
 {
     /***
         (ffi-free pointer)
@@ -3938,7 +2560,7 @@ DEFUN("FFI-FREE", func_ffi_free, g.kernel(), true)
     return g.s_T;
 }
 
-DEFUN("FFI-REF", func_ffi_ref, g.kernel(), true)
+DEFUN("FFI-REF", func_ffi_ref, g.kernel_str(), true)
 {
     /***
         (ffi-ref pointer &optional offset)
@@ -3959,7 +2581,7 @@ DEFUN("FFI-REF", func_ffi_ref, g.kernel(), true)
     }
 }
 
-DEFUN("FFI-REF-8", func_ffi_ref_8, g.kernel(), true)
+DEFUN("FFI-REF-8", func_ffi_ref_8, g.kernel_str(), true)
 {
     /***
         (ffi-ref-8 pointer)
@@ -3970,7 +2592,7 @@ DEFUN("FFI-REF-8", func_ffi_ref_8, g.kernel(), true)
     return Value::wrap_fixnum(*ptr);
 }
 
-DEFUN("FFI-REF-16", func_ffi_ref_16, g.kernel(), true)
+DEFUN("FFI-REF-16", func_ffi_ref_16, g.kernel_str(), true)
 {
     /***
         (ffi-ref-16 pointer)
@@ -3981,7 +2603,7 @@ DEFUN("FFI-REF-16", func_ffi_ref_16, g.kernel(), true)
     return Value::wrap_fixnum(*ptr);
 }
 
-DEFUN("FFI-REF-32", func_ffi_ref_32, g.kernel(), true)
+DEFUN("FFI-REF-32", func_ffi_ref_32, g.kernel_str(), true)
 {
     /***
         (ffi-ref-32 pointer)
@@ -3992,7 +2614,7 @@ DEFUN("FFI-REF-32", func_ffi_ref_32, g.kernel(), true)
     return Value::wrap_fixnum(*ptr);
 }
 
-DEFUN("FFI-REF-64", func_ffi_ref_64, g.kernel(), true)
+DEFUN("FFI-REF-64", func_ffi_ref_64, g.kernel_str(), true)
 {
     /***
         (ffi-ref-64 pointer)
@@ -4003,7 +2625,7 @@ DEFUN("FFI-REF-64", func_ffi_ref_64, g.kernel(), true)
     return Value::wrap_fixnum(*ptr);
 }
 
-DEFUN("FFI-SET-REF", func_ffi_set_ref, g.kernel(), true)
+DEFUN("FFI-SET-REF", func_ffi_set_ref, g.kernel_str(), true)
 {
     /***
         (ffi-set-ref pointer value value-size)
@@ -4020,7 +2642,7 @@ DEFUN("FFI-SET-REF", func_ffi_set_ref, g.kernel(), true)
     return args[2];
 }
 
-DEFUN("FFI-SET-REF-8", func_ffi_set_ref_8, g.kernel(), true)
+DEFUN("FFI-SET-REF-8", func_ffi_set_ref_8, g.kernel_str(), true)
 {
     /***
         (ffi-set-ref-8 pointer value)
@@ -4043,7 +2665,7 @@ DEFUN("FFI-SET-REF-8", func_ffi_set_ref_8, g.kernel(), true)
     return Value::wrap_fixnum(value);
 }
 
-DEFUN("FFI-SET-REF-16", func_ffi_set_16, g.kernel(), true)
+DEFUN("FFI-SET-REF-16", func_ffi_set_16, g.kernel_str(), true)
 {
     /***
         (ffi-set-ref-16 pointer value)
@@ -4066,7 +2688,7 @@ DEFUN("FFI-SET-REF-16", func_ffi_set_16, g.kernel(), true)
     return Value::wrap_fixnum(value);
 }
 
-DEFUN("FFI-SET-REF-32", func_ffi_set_32, g.kernel(), true)
+DEFUN("FFI-SET-REF-32", func_ffi_set_32, g.kernel_str(), true)
 {
     /***
         (ffi-set-ref-32 pointer value)
@@ -4089,7 +2711,7 @@ DEFUN("FFI-SET-REF-32", func_ffi_set_32, g.kernel(), true)
     return Value::wrap_fixnum(value);
 }
 
-DEFUN("FFI-SET-REF-64", func_ffi_set_64, g.kernel(), true)
+DEFUN("FFI-SET-REF-64", func_ffi_set_64, g.kernel_str(), true)
 {
     /***
         (ffi-set-ref-64 pointer value)
@@ -4112,7 +2734,7 @@ DEFUN("FFI-SET-REF-64", func_ffi_set_64, g.kernel(), true)
     return Value::wrap_fixnum(value);
 }
 
-DEFUN("FFI-MARSHAL", func_ffi_marshal, g.kernel(), true)
+DEFUN("FFI-MARSHAL", func_ffi_marshal, g.kernel_str(), true)
 {
     /***
         (ffi-marshal object)
@@ -4130,7 +2752,7 @@ DEFUN("FFI-MARSHAL", func_ffi_marshal, g.kernel(), true)
     return res;
 }
 
-DEFUN("FFI-STRLEN", func_ffi_strlen, g.kernel(), true)
+DEFUN("FFI-STRLEN", func_ffi_strlen, g.kernel_str(), true)
 {
     CHECK_NARGS_EXACTLY(1);
     CHECK_SYSTEM_POINTER(args[0]);
@@ -4138,7 +2760,7 @@ DEFUN("FFI-STRLEN", func_ffi_strlen, g.kernel(), true)
     return Value::wrap_fixnum(strlen(ptr));
 }
 
-DEFUN("FFI-COERCE-FIXNUM", func_ffi_coerce_fixnum, g.kernel(), true)
+DEFUN("FFI-COERCE-FIXNUM", func_ffi_coerce_fixnum, g.kernel_str(), true)
 {
     /***
         (ffi-coerce-fixnum system-pointer)
@@ -4149,7 +2771,7 @@ DEFUN("FFI-COERCE-FIXNUM", func_ffi_coerce_fixnum, g.kernel(), true)
     return Value::wrap_fixnum(ptr);
 }
 
-DEFUN("FFI-COERCE-INT", func_ffi_coerce_int, g.kernel(), true)
+DEFUN("FFI-COERCE-INT", func_ffi_coerce_int, g.kernel_str(), true)
 {
     /***
         (ffi-coerce-int system-pointer)
@@ -4160,7 +2782,7 @@ DEFUN("FFI-COERCE-INT", func_ffi_coerce_int, g.kernel(), true)
     return Value::wrap_fixnum(ptr);
 }
 
-DEFUN("FFI-COERCE-STRING", func_ffi_coerce_string, g.kernel(), true)
+DEFUN("FFI-COERCE-STRING", func_ffi_coerce_string, g.kernel_str(), true)
 {
     /***
         (ffi-coerce-string system-pointer &optional length)
@@ -4215,6 +2837,7 @@ void set_global(compiler::Scope *scope, Value symbol_value, Value value)
 static
 void initialize_globals(compiler::Scope *root_scope, char **argv)
 {
+
     auto kernel = g.kernel();
     auto core = g.core();
     auto user = g.user();
@@ -4291,13 +2914,14 @@ void initialize_globals(compiler::Scope *root_scope, char **argv)
 
     for (auto &init : g_function_initializers)
     {
+        auto package = g.packages.find_or_create(init.package_name);
         if (init.is_exported)
         {
-            export_function(init.package, init.lisp_name, init.cpp_function);
+            export_function(package, init.lisp_name, init.cpp_function);
         }
         else
         {
-            internal_function(init.package, init.lisp_name, init.cpp_function);
+            internal_function(package, init.lisp_name, init.cpp_function);
         }
     }
 
@@ -4336,62 +2960,6 @@ void initialize_globals(compiler::Scope *root_scope, char **argv)
 
 }
 
-bool VM_State::find_handler(Value tag, bool auto_pop, Handler_Case &out_case_state, Signal_Handler &out_handler)
-{
-    bool found = false;
-    size_t npop = 0;
-    for (auto it = m_handler_cases.rbegin(); !found && it != m_handler_cases.rend(); it++)
-    {
-        npop++;
-        auto &handlers = it->handlers;
-        for (auto h = handlers.rbegin(); h != handlers.rend(); ++h)
-        {
-            if (h->tag == g.s_T || h->tag == tag)
-            {
-                out_case_state = *it;
-                out_handler = *h;
-                found = true;
-                break;
-            }
-        }
-    }
-
-    if (auto_pop)
-    {
-        m_handler_cases.resize(m_handler_cases.size() - npop);
-    }
-    return found;
-}
-
-Value VM_State::call_lisp_function(Value function_or_symbol, Value *args, uint32_t nargs)
-{
-    auto function = symbolp(function_or_symbol)
-        ? function_or_symbol.as_object()->symbol()->function()
-        : function_or_symbol;
-
-    // What better way to reduce code sync bugs than by just letting the VM handle dispatching the call?
-    if (m_stub.emitter == nullptr)
-    {
-        m_stub.emitter = new bytecode::Emitter(nullptr);
-        m_stub.function_offset = m_stub.emitter->position() + 1;
-        m_stub.emitter->emit_push_literal(function);
-        m_stub.nargs_offset = m_stub.emitter->position() + 1;
-        m_stub.emitter->emit_funcall(nargs);
-        m_stub.emitter->emit_halt();
-        m_stub.emitter->lock();
-    }
-    else
-    {
-        m_stub.emitter->set_raw(m_stub.function_offset, function);
-        m_stub.emitter->set_raw(m_stub.nargs_offset, nargs);
-    }
-    for (uint32_t i = 0; i < nargs; ++i)
-    {
-        push_param(args[i]);
-    }
-    execute(m_stub.emitter->bytecode().data());
-    return pop_param();
-}
 
 template<typename Function, typename ...ExtraArgs>
 static
@@ -5152,6 +3720,9 @@ int main(int argc, char **argv)
     }
 
     repl = repl || !file;
+
+    g.init();
+    gc.init();
 
     compiler::THE_ROOT_SCOPE = new compiler::Scope;
     initialize_globals(compiler::THE_ROOT_SCOPE, argv+i);

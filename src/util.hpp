@@ -54,17 +54,20 @@ std::string lisp_string_to_native_string(Value str)
 }
 
 
-FORCE_INLINE
-bool Value::is_type(Object_Type type) const noexcept
-{
-    return is_object() && as_object()->type() == type;
-}
-
 static FORCE_INLINE
 bool symbolp(Value v)
 {
     return v.is_type(Object_Type::Symbol);
 }
+
+static FORCE_INLINE
+bool stringp(Value v)
+{
+    return v.is_type(Object_Type::Simple_Array) &&
+        v.as_object()->simple_array()->element_type() == g.s_CHARACTER;
+}
+
+
 
 static //FORCE_INLINE
 Value to_list(const Value *vals, uint32_t nvals)
@@ -173,5 +176,23 @@ struct hash<lisp::Value>
 };
 
 }
+
+#define TYPE_CHECK(what, typecheck, expected)                           \
+    do {                                                                \
+        if (!(what).typecheck) {                                        \
+            signal_args = gc.list(g.s_TYPE_ERROR, (expected), (what));  \
+            goto raise_signal;                                          \
+        }                                                               \
+    } while (0)
+
+#define CHECK_FIXNUM(what) TYPE_CHECK(what, is_fixnum(), g.s_FIXNUM)
+#define CHECK_CONS(what) TYPE_CHECK(what, is_cons(), g.s_CONS)
+#define CHECK_LIST(what) TYPE_CHECK(what, is_list(), g.s_LIST)
+#define CHECK_CHARACTER(what) TYPE_CHECK(what, is_character(), g.s_CHARACTER)
+#define CHECK_SYMBOL(what) TYPE_CHECK(what, is_type(Object_Type::Symbol), g.s_SYMBOL)
+#define CHECK_FILE_STREAM(what) TYPE_CHECK(what, is_type(Object_Type::File_Stream), g.s_FILE_STREAM)
+#define CHECK_SIMPLE_ARRAY(what) TYPE_CHECK(what, is_type(Object_Type::Simple_Array), g.s_SIMPLE_ARRAY)
+#define CHECK_SYSTEM_POINTER(what) TYPE_CHECK(what, is_type(Object_Type::System_Pointer), g.s_SYSTEM_POINTER)
+#define CHECK_STRUCT(what) TYPE_CHECK(what, is_type(Object_Type::Structure), g.s_STRUCTURE)
 
 #endif

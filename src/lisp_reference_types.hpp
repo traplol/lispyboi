@@ -658,6 +658,13 @@ struct Object
     Object_Type m_type;
     char m_data[0];
 };
+
+FORCE_INLINE
+bool Value::is_type(Object_Type type) const noexcept
+{
+    return is_object() && as_object()->type() == type;
+}
+
 }
 
 #endif

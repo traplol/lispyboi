@@ -145,11 +145,18 @@ struct VM_State
         return m_call_frame_bottom;
     }
 
-
-    template<bool debuggable>
-    const uint8_t *execute_impl(const uint8_t *ip);
-
-    inline const uint8_t *execute(const uint8_t *ip);
+    const uint8_t *execute(const uint8_t *ip)
+    {
+#if USE_COMPUTED_GOTOS
+        if (g.debugger.breaking)
+        {
+            return execute_impl<true>(ip);
+        }
+        return execute_impl<false>(ip);
+#else
+        return execute_impl<true>(ip);
+#endif
+    }
 
     Value call_lisp_function(Value function_or_symbol, Value *args, uint32_t nargs);
 
@@ -218,6 +225,8 @@ struct VM_State
     #endif
 
   private:
+    template<bool debuggable>
+    const uint8_t *execute_impl(const uint8_t *ip);
 
     void push_handler_case(std::vector<Signal_Handler> &&handlers)
     {
@@ -319,9 +328,9 @@ struct VM_State
     #if PROFILE_OPCODE_PAIRS
     std::unordered_map<Opcode_Pair, int> m_opcode_pairs;
     #endif
-
-    GC *m_gc;
 };
+
+extern VM_State *THE_LISP_VM;
 
 }
 

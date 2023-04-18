@@ -3,7 +3,7 @@
 
 using namespace lisp;
 
-Runtime_Globals::Runtime_Globals()
+void Runtime_Globals::init()
 {
     gc.register_marking_function([this](GC &gc) {this->gc_mark(gc);});
 }

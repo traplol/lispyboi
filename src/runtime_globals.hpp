@@ -11,27 +11,32 @@ struct GC;
 
 struct Runtime_Globals
 {
-    Runtime_Globals();
+    void init();
     void gc_mark(GC &gc);
+
+    static inline const char *kernel_str() { return "KERNEL"; }
+    static inline const char *keyword_str() { return "KEYWORD"; }
+    static inline const char *core_str() { return "LISPYBOI"; }
+    static inline const char *user_str() { return "LISPYBOI-USER"; }
 
     Package *kernel()
     {
-        return packages.find_or_create("KERNEL");
+        return packages.find_or_create(kernel_str());
     }
 
     Package *keyword()
     {
-        return packages.find_or_create("KEYWORD");
+        return packages.find_or_create(keyword_str());
     }
 
     Package *core()
     {
-        return packages.find_or_create("LISPYBOI");
+        return packages.find_or_create(core_str());
     }
 
     Package *user()
     {
-        return packages.find_or_create("LISPYBOI-USER");
+        return packages.find_or_create(user_str());
     }
 
     Value get_keyword(const std::string &symbol_name)
