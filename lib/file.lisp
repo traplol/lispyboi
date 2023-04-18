@@ -74,7 +74,8 @@
   fs)
 
 (defmethod output-stream-write-char ((stream file-stream) character)
-  (kernel::%file-putchar stream character))
+  (kernel::%file-putchar stream character)
+  (kernel::%file-flush stream))
 
 (defmethod output-stream-write-string ((stream file-stream) string)
   (kernel::%file-puts stream string))

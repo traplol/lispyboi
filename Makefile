@@ -1,6 +1,6 @@
-CC := clang++
+CC := clang++-15
 CFLAGS := -std=c++17 -Wall
-LDFLAGS := -ldl
+LDFLAGS := -ldl -fPIE 
 
 .PHONY: all clean _debug debug debug3 debug2 debug1 release
 

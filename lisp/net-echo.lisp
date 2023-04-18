@@ -37,7 +37,7 @@
 
 (in-package :net-echo)
 
-(let ((port 12345)
+(let ((port nil)
       (mode 'client))
 
   (dolist (arg *command-line*)
@@ -46,12 +46,13 @@
           ((string= "--client" arg)
            (setf mode 'client))
           (t
-           (setf port arg))))
-
-  (handler-case
-      (setf port (parse-integer port))
-    (parse-error (&rest args)
-      (setf port 12345)))
+           (handler-case
+               (setf port (parse-integer arg))
+             (parse-error (&rest args)
+               ;; pass
+               )))))
+  (when (eq nil port)
+    (setf port 11111))
 
   (if (eq 'server mode)
       (run-simple-echo-server port)

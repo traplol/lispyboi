@@ -627,6 +627,11 @@ struct Symbol
         return m_name;
     }
 
+    bool has_function() const
+    {
+        return m_function != Value::nil();
+    }
+
     Value function() const
     {
         return m_function;
@@ -936,6 +941,11 @@ struct Function
     const uint8_t *end() const
     {
         return m_code.data() + m_code.size();
+    }
+
+    size_t size() const
+    {
+        return m_code.size();
     }
 
     const std::vector<const Symbol*> &parameters() const
@@ -1545,7 +1555,9 @@ struct GC
         #endif
         auto &current_gen = current_generation();
 
+        #if GC_DIAGNOSTICS > 0
         size_t moved_to_generation = 0;
+        #endif
         size_t freed = 0;
         for (size_t i = 0; i < m_recent_allocations.size();)
         {
@@ -1576,7 +1588,9 @@ struct GC
                 current_gen.push_back(r);
                 m_recent_allocations[i] = m_recent_allocations.back();
                 m_recent_allocations.pop_back();
+                #if GC_DIAGNOSTICS > 0
                 moved_to_generation++;
+                #endif
             }
             else
             {
@@ -2245,6 +2259,11 @@ struct Package_Registry
                     it->second->name().c_str(), alias.c_str(), to->name().c_str());
         }
         m_packages[alias] = to;
+    }
+
+    const std::unordered_map<std::string, Package*> &packages() const
+    {
+        return m_packages;
     }
 
   private:
@@ -3251,7 +3270,7 @@ struct Debug_Info
     {
         for (auto it : m_functions)
         {
-            Region r(it->begin(), it->end() - it->begin());
+            Region r(it->begin(), it->size());
             if (r.contains(address))
             {
                 *out_function = it;
@@ -3955,10 +3974,52 @@ const uint8_t *disassemble1(std::ostream &out, const uint8_t *ip, bool here)
     return ip;
 }
 
-static int put_disassembly_tag(std::ostream &out, const std::string &tag)
+static
+int put_disassembly_tag(std::ostream &out, const std::string &tag)
 {
     out << "Disassembly for \"" << tag << "\"\n";
     return 1;
+}
+
+static
+const Symbol *find_symbol_with_function(const Function *function)
+{
+    if (!function)
+        return nullptr;
+
+    for (const auto &[_, package] : g.packages.packages())
+    {
+        if (!package)
+            continue;
+        for (const auto &[_, value] : package->symbols())
+        {
+            if (!symbolp(value))
+                continue;
+            const auto symbol = value.as_object()->symbol();
+            if (!symbol)
+                continue;
+            if (symbol->package() != package)
+                continue;
+            if (!symbol->has_function())
+                continue;
+            
+            auto func_value = symbol->function();
+            if (!func_value.is_object())
+                continue;
+            
+            const auto func_obj = func_value.as_object();
+            if (func_obj->type() != Object_Type::Closure)
+                continue;
+
+            const auto closure = func_obj->closure();
+
+            if (closure && closure->function() == function)
+            {
+                return symbol;
+            }
+        }
+    }
+    return nullptr;
 }
 
 static
@@ -4001,11 +4062,14 @@ int disassemble(std::ostream &out, const std::string &tag, const Function *funct
 }
 
 static
-int disassemble_maybe_function(std::ostream &out, const std::string &tag, const uint8_t *ip, bool here = false)
+int disassemble_maybe_function(std::ostream &out, std::string tag, const uint8_t *ip, bool here = false)
 {
     const Function *func;
     if (Debug_Info::find_function(ip, &func))
     {
+        auto symbol = find_symbol_with_function(func);
+        if (symbol != nullptr)
+            tag = symbol->qualified_name();
         return disassemble(out, tag, func, ip);
     }
 
@@ -4860,6 +4924,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
         Doesnt_Push_Frame,
         Pushes_Frame,
     } call_type;
+    const uint8_t *signal_raised_at_ip = nullptr;
     DISPATCH_LOOP
     {
         if constexpr (debuggable)
@@ -5374,6 +5439,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     GC_UNGUARD();
                 }
                 raise_signal:
+                signal_raised_at_ip = ip;
                 //bytecode::disassemble_maybe_function(std::cout, "SIGNAL", ip);
                 Handler_Case restore;
                 Signal_Handler handler;
@@ -5405,7 +5471,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     auto bottom = m_call_frame_bottom;
                     m_call_frame_top = m_call_frame_bottom;
                     m_stack_top = m_stack_bottom;
-                    throw Signal_Exception(signal_args, ip, top, bottom);
+                    throw Signal_Exception(signal_args, signal_raised_at_ip, top, bottom);
                 }
             }
 
@@ -5786,6 +5852,7 @@ DEFUN("%DISASSEMBLE", func_disassemble, g.kernel(), false)
 {
     CHECK_NARGS_EXACTLY(1);
     auto expr = args[0];
+    std::string tag = "DISASSEMBLY";
     if (expr.is_cons())
     {
         try
@@ -5794,7 +5861,7 @@ DEFUN("%DISASSEMBLE", func_disassemble, g.kernel(), false)
             bytecode::Emitter e(compiler::THE_ROOT_SCOPE);
             compiler::compile(e, expanded, true);
             e.lock();
-            bytecode::disassemble(std::cout, "DISASSEMBLY", e);
+            bytecode::disassemble(std::cout, tag, e);
         }
         catch (VM_State::Signal_Exception ex)
         {
@@ -5809,17 +5876,23 @@ DEFUN("%DISASSEMBLE", func_disassemble, g.kernel(), false)
         if (val.is_type(Object_Type::Closure))
         {
             auto closure = expr.as_object()->closure();
-            bytecode::disassemble(std::cout, "DISASSEMBLY", closure->function(), closure->function()->main_entry());
+            auto symbol = bytecode::find_symbol_with_function(closure->function());
+            if (symbol != nullptr)
+                tag = symbol->qualified_name();
+            bytecode::disassemble(std::cout, tag, closure->function(), closure->function()->main_entry());
         }
         else
         {
-            bytecode::disassemble(std::cout, "DISASSEMBLY", reinterpret_cast<uint8_t*>(ptr));
+            bytecode::disassemble(std::cout, tag, reinterpret_cast<uint8_t*>(ptr));
         }
     }
     else if (expr.is_type(Object_Type::Closure))
     {
         auto closure = expr.as_object()->closure();
-        bytecode::disassemble(std::cout, "DISASSEMBLY", closure->function(), closure->function()->main_entry());
+        auto symbol = bytecode::find_symbol_with_function(closure->function());
+        if (symbol != nullptr)
+            tag = symbol->qualified_name();
+        bytecode::disassemble(std::cout, tag, closure->function(), closure->function()->main_entry());
     }
     return Value::nil();
 }
@@ -8955,9 +9028,10 @@ void trace_signal_exception(VM_State &vm, const VM_State::Signal_Exception &e)
             }
         }
     }
-    else if (e.ip)
+
+    if (e.ip)
     {
-        vm.debug_dump(std::cout, "WHOOPS", e.ip, true);
+        bytecode::disassemble_maybe_function(std::cout, "WHOOPS", e.ip);
     }
     printf("ERROR: %s\n", repr(e.what).c_str());
     //auto signal = car(e.what);
