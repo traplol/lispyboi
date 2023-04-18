@@ -1,6 +1,10 @@
 CC := clang++-15
-CFLAGS := -std=c++17 -Wall
+CFLAGS := -std=c++17 -Wall -Wno-unused-function
 LDFLAGS := -ldl -fPIE 
+
+SOURCES:= $(wildcard src/*/*.cpp)
+SOURCES+= $(wildcard src/*.cpp)
+OBJECTS:= $(addprefix obj/,$(notdir $(SOURCES:.cpp=.o)))
 
 .PHONY: all clean _debug debug debug3 debug2 debug1 release
 
@@ -21,13 +25,16 @@ debug1: _debug
 _debug: CFLAGS += -fno-omit-frame-pointer -fno-optimize-sibling-calls
 _debug: lispyboi
 
-release: CFLAGS += -O3 -DDEBUG=0
+release: CFLAGS += -O3 -DDEBUG=0 -flto
 release: lispyboi
 
-lispyboi: obj/lispyboi.o obj/platform.o obj/ffi.o
+lispyboi: $(OBJECTS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-obj/%.o: src/%.cpp obj
+obj/%.o: src/*/%.cpp | obj
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+obj/%.o: src/%.cpp | obj
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 obj:
