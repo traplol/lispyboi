@@ -228,9 +228,12 @@ int disassemble_maybe_function(std::ostream &out, std::string tag, const uint8_t
     const Function *func;
     if (Debug_Info::find_function(ip, &func))
     {
+        tag = "<Anonymous Closure>";
         auto symbol = find_symbol_with_function(func);
         if (symbol != nullptr)
+        {
             tag = symbol->qualified_name();
+        }
         return disassemble(out, tag, func, ip);
     }
 

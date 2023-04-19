@@ -25,6 +25,7 @@ struct File_Stream;
 struct Simple_Array;
 struct Structure;
 struct Function;
+struct Signal_Context;
 
 using System_Pointer = void*;
 using Primitive = Value (*)(Value *args, uint32_t nargs, bool &raised_signal);
@@ -38,7 +39,8 @@ enum class Object_Type
     Simple_Array,
     System_Pointer,
     Structure,
-    Float
+    Float,
+    Signal_Context
 };
 
 struct Value

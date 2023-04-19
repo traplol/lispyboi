@@ -231,10 +231,27 @@ std::string repr(Value value)
                    << ">";
                 return ss.str();
             }
-            case Object_Type::Structure: return "#<STRUCTURE>";
+            case Object_Type::Structure:
+            {
+                std::stringstream ss;
+                ss << "#<STRUCTURE "
+                   << repr(obj->structure()->type())
+                   << ">";
+                return ss.str();
+            }
             case Object_Type::Float:
             {
                 return std::to_string(obj->to_float());
+            }
+            case Object_Type::Signal_Context:
+            {
+                std::stringstream ss;
+                ss << "#<SIGNAL-CONTEXT 0x"
+                   << std::hex << reinterpret_cast<uintptr_t>(obj->signal_context())
+                   << " -> ip@"
+                   << std::hex << reinterpret_cast<uintptr_t>(obj->signal_context()->ip())
+                   << ">";
+                return ss.str();
             }
         }
     }
@@ -385,6 +402,13 @@ namespace primitives
 ///////////////////////////////////////////////////////////////////////
 // Internal Functions
 
+DEFUN("%REPR", func_repr, g.kernel_str(), false)
+{
+    CHECK_NARGS_EXACTLY(1);
+    auto r = repr(args[0]);
+    return gc.alloc_string(r);
+}
+
 DEFUN("%PRINT", func_print, g.core_str(), false)
 {
     for (uint32_t i = 0; i < nargs; ++i)
@@ -430,7 +454,7 @@ DEFUN("%DISASSEMBLE", func_disassemble, g.kernel_str(), false)
         }
         else
         {
-            bytecode::disassemble(std::cout, tag, reinterpret_cast<uint8_t*>(ptr));
+            bytecode::disassemble_maybe_function(std::cout, tag, reinterpret_cast<uint8_t*>(ptr), true);
         }
     }
     else if (expr.is_type(Object_Type::Closure))
@@ -1422,6 +1446,7 @@ DEFUN("%TYPE-OF", func_type_of, g.kernel_str(), false)
             case Object_Type::Structure: return it.as_object()->structure()->type_name();
             case Object_Type::Package: return g.s_PACKAGE;
             case Object_Type::Float: return g.s_FLOAT;
+            case Object_Type::Signal_Context: return g.s_SIGNAL_CONTEXT;
         }
         return Value::nil();
     }
@@ -2867,6 +2892,7 @@ void initialize_globals(compiler::Scope *root_scope, char **argv)
     g.s_pLAMBDA          = kernel->intern_symbol("%LAMBDA");
 
     g.s_pFUNCALL         = kernel->export_symbol("FUNCALL");
+    g.s_SIGNAL_CONTEXT   = kernel->export_symbol("SIGNAL-CONTEXT");
 
     g.s_T                = core->export_symbol("T");
     g.s_IF               = core->export_symbol("IF");
@@ -3509,21 +3535,35 @@ bool read_gc_paused(std::istream &source, Value &out_result)
 
 void trace_signal_exception(VM_State &vm, const VM_State::Signal_Exception &e)
 {
-    if (e.stack_trace_top != e.stack_trace_bottom)
+    if (e.ctx)
     {
-        auto p = e.stack_trace_bottom;
-        for (; p != e.stack_trace_top; ++p)
+        // How can this become and infinite loop?
+        auto ctx = e.ctx;
+        while (ctx->tag().is_type(Object_Type::Signal_Context))
         {
-            if (p->ip)
+            bytecode::disassemble_maybe_function(std::cout, "WHOOPS", ctx->ip());
+            ctx = ctx->tag().as_object()->signal_context();
+        }
+        bytecode::disassemble_maybe_function(std::cout, "WHOOPS", ctx->ip());
+    }
+    else
+    {
+        if (e.stack_trace_top != e.stack_trace_bottom)
+        {
+            auto p = e.stack_trace_bottom;
+            for (; p != e.stack_trace_top; ++p)
             {
-                bytecode::disassemble_maybe_function(std::cout, "WHOOPS", p->ip);
+                if (p->ip)
+                {
+                    bytecode::disassemble_maybe_function(std::cout, "WHOOPS", p->ip);
+                }
             }
         }
-    }
 
-    if (e.ip)
-    {
-        bytecode::disassemble_maybe_function(std::cout, "WHOOPS", e.ip);
+        if (e.ip)
+        {
+            bytecode::disassemble_maybe_function(std::cout, "WHOOPS", e.ip);
+        }
     }
     printf("ERROR: %s\n", repr(e.what).c_str());
     //auto signal = car(e.what);
@@ -3626,49 +3666,67 @@ void run_repl(VM_State &vm, compiler::Scope &root_scope)
                g.packages.current()->as_lisp_value());
 
     auto &stm = std::cin;
+    static auto read_sym = g.core()->export_symbol("READ").as_object()->symbol();
     while (!stm.eof())
     {
-        printf("%s> ", g.packages.current()->name().c_str());
+        fprintf(stdout, "%s> ", g.packages.current()->name().c_str());
         Value out;
         try {
-            if (read_gc_paused(stm, out))
+            if (!read_sym->function().is_nil())
             {
-                auto out_handle = gc.pin_value(out);
+                fflush(stdout);
                 try
                 {
-                    auto expanded = macro_expand_impl(out, vm);
-                    gc.unpin_value(out_handle);
-
-                    bytecode::Emitter e(&root_scope);
-                    compiler::compile(e, expanded, true, false);
-                    e.emit_halt();
-                    e.lock();
-
-                    g.resize_globals(root_scope.locals().size());
-
-                    vm.push_frame(nullptr, 0);
-                    vm.execute(e.bytecode().data());
+                    out = vm.call_lisp_function(read_sym->function(), nullptr, 0);
                 }
                 catch (VM_State::Signal_Exception e)
                 {
-                    gc.unpin_value(out_handle);
+                    if (car(e.what) == g.s_END_OF_FILE)
+                        break;
                     trace_signal_exception(vm, e);
-                    continue;
                 }
-                if (vm.stack_top() != vm.stack_bottom())
-                {
-                    auto result = vm.pop_param();
-                    printf("==> %s\n", repr(result).c_str());
-                }
-
-                if (vm.call_frame_top() != vm.call_frame_bottom())
-                {
-                    vm.set_frame(vm.pop_frame());
-                }
+            }
+            else if (read_sym->function().is_nil() && read_gc_paused(stm, out))
+            {
+                // nothing
             }
             else if (stm.eof())
             {
                 break;
+            }
+
+            auto out_handle = gc.pin_value(out);
+            try
+            {
+                auto expanded = macro_expand_impl(out, vm);
+                gc.unpin_value(out_handle);
+
+                bytecode::Emitter e(&root_scope);
+                compiler::compile(e, expanded, true, false);
+                e.emit_halt();
+                e.lock();
+
+                g.resize_globals(root_scope.locals().size());
+
+                vm.push_frame(nullptr, 0);
+                vm.execute(e.bytecode().data());
+            }
+            catch (VM_State::Signal_Exception e)
+            {
+                gc.unpin_value(out_handle);
+                trace_signal_exception(vm, e);
+                continue;
+            }
+
+            if (vm.stack_top() != vm.stack_bottom())
+            {
+                auto result = vm.pop_param();
+                fprintf(stdout, "==> %s\n", repr(result).c_str());
+            }
+
+            if (vm.call_frame_top() != vm.call_frame_bottom())
+            {
+                vm.set_frame(vm.pop_frame());
             }
         }
         catch (VM_State::Signal_Exception e)
@@ -3680,7 +3738,6 @@ void run_repl(VM_State &vm, compiler::Scope &root_scope)
 }
 
 }
-
 
 int main(int argc, char **argv)
 {
@@ -3774,3 +3831,4 @@ int main(int argc, char **argv)
 
     return 0;
 }
+

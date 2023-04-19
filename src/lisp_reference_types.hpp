@@ -481,7 +481,6 @@ struct Function
     bool m_has_optionals;
 };
 
-
 struct Closure
 {
     Closure(const Function *function)
@@ -527,6 +526,30 @@ struct Closure
   private:
     std::vector<Closure_Reference*> m_captures;
     const Function *m_function;
+};
+
+struct Signal_Context
+{
+    Signal_Context(Value tag, const uint8_t *ip)
+        : m_tag(tag)
+        , m_ip(ip)
+    {
+
+    }
+
+    Value tag() const
+    {
+        return m_tag;
+    }
+
+    const uint8_t *ip() const
+    {
+        return m_ip;
+    }
+
+  private:
+    Value m_tag;
+    const uint8_t *m_ip;
 };
 
 struct Object
@@ -586,6 +609,11 @@ struct Object
         return as<System_Pointer>();
     }
 
+    Signal_Context *signal_context()
+    {
+        return as<Signal_Context>();
+    }
+
   private:
     friend struct GC;
 
@@ -632,6 +660,10 @@ struct Object
         {
             m_type = Object_Type::Float;
         }
+        else if constexpr (std::is_same<T, Signal_Context>::value)
+        {
+            m_type = Object_Type::Signal_Context;
+        }
         else
         {
             static_assert(always_false<T>);
@@ -652,6 +684,7 @@ struct Object
             case Object_Type::System_Pointer: break;
             case Object_Type::Structure: structure()->~Structure(); break;
             case Object_Type::Float: break;
+            case Object_Type::Signal_Context: break;
         }
     }
 

@@ -167,6 +167,11 @@ struct GC
         }
     }
 
+    inline void mark_signal_context(Signal_Context *ctx)
+    {
+        mark_value(ctx->tag());
+    }
+
     size_t mark_and_sweep()
     {
         #if GC_DIAGNOSTICS > 0

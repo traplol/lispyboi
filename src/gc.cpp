@@ -122,6 +122,9 @@ void GC::mark_value(Value value)
                 break;
             case Object_Type::Float:
                 break;
+            case Object_Type::Signal_Context:
+                mark_signal_context(obj->signal_context());
+                break;
         }
     }
 

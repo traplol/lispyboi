@@ -116,6 +116,8 @@ struct Runtime_Globals
     Value s_pHANDLER_CASE;
     Value s_pDEFINE_MACRO;
 
+    Value s_SIGNAL_CONTEXT;
+
     Package_Registry packages;
     std::vector<Value> global_value_slots;
     std::vector<Value> literal_object_slots;

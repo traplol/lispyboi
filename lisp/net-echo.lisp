@@ -9,7 +9,7 @@
 
 (defun run-simple-echo-server (port)
   (let* ((server (socket-open-server port))
-         (client (socket-accept server)))
+         (client (car (socket-accept server))))
     (while t
            (let ((recv (socket-recv-string client)))
              (format t ">~a~%" recv)

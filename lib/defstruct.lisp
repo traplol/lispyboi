@@ -41,14 +41,14 @@
                   `(defun ,getter-name (instance)
                      (if (eq ',struct-name (type-of instance))
                          (kernel::%get-slot instance ,index)
-                         (signal 'type-error ',struct-name instance))))
+                         (signal 'type-error ',getter-name ',struct-name instance (type-of instance)))))
                 getter-names
                 slot-indices)
          ,@(map (lambda (setter-name index)
                   `(defun ,setter-name (instance value)
                      (if (eq ',struct-name (type-of instance))
                          (kernel::%set-slot instance ,index value)
-                         (signal 'type-error ',struct-name instance))))
+                         (signal 'type-error ',setter-name ',struct-name instance (type-of instance)))))
                 setter-names
                 slot-indices)
          ,@(map (lambda (getter setter) (list 'defsetf getter setter))

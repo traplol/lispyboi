@@ -215,6 +215,10 @@
 
 (defstruct socket (fd))
 
+(defmethod print-object ((o socket) stream)
+  (format stream "#<SOCKET>")
+  o)
+
 (defun check-port (port)
   (unless (fixnump port)
     (signal 'socket-error "Port must be a FIXNUM in the range (0-65535)" port))

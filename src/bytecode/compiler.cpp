@@ -459,10 +459,10 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
                 e.emit_push_literal(handler_tag);
                 if (handler_tag == g.s_T)
                 {
-                    if (!cdr(handlers).is_nil())
-                    {
-                        fprintf(stderr, "WARNING: Unreachable code in HANDLER-CASE\n");
-                    }
+                    //if (!cdr(handlers).is_nil())
+                    //{
+                    //    fprintf(stderr, "WARNING: Unreachable code in HANDLER-CASE\n");
+                    //}
                     break;
                 }
                 handlers = cdr(handlers);

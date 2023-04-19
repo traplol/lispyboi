@@ -26,9 +26,18 @@ struct VM_State
 
     struct Exception
     {
-        Exception(Value what) : what(what) {}
+        Exception(Value what)
+            : what(what)
+            , ctx(nullptr)
+        {}
+
+        Exception(Value what, const Signal_Context *ctx)
+            : what(what)
+            , ctx(ctx)
+        {}
 
         Value what;
+        const Signal_Context *ctx;
     };
 
     struct Unhandleable_Exception : Exception
@@ -45,8 +54,8 @@ struct VM_State
             , stack_trace_bottom(nullptr)
         {}
 
-        Signal_Exception(Value what, const uint8_t *ip, Call_Frame *stack_top, Call_Frame *stack_bottom)
-            : Exception(what)
+        Signal_Exception(Value what, const uint8_t *ip, Call_Frame *stack_top, Call_Frame *stack_bottom, const Signal_Context *ctx)
+            : Exception(what, ctx)
             , ip(ip)
             , stack_trace_top(stack_top)
             , stack_trace_bottom(stack_bottom)

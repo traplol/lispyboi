@@ -18,8 +18,7 @@
            (let ((func (assoc (first args) methods #'typep)))
              (if func
                  (apply (cdr func) args)
-                 (signal 'no-method-exists-error "No method exists" ',fun-name (type-of (first args))
-                         ',fun-name methods))))
+                 (signal 'no-method-exists-error "No method exists" ',fun-name (type-of (first args))))))
          (defun ,define-method (type function)
            (push (cons type function) methods)
            nil)))))

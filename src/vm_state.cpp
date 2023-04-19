@@ -208,7 +208,6 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
         Doesnt_Push_Frame,
         Pushes_Frame,
     } call_type;
-    const uint8_t *signal_raised_at_ip = nullptr;
     DISPATCH_LOOP
     {
         if constexpr (debuggable)
@@ -723,8 +722,6 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     GC_UNGUARD();
                 }
                 raise_signal:
-                signal_raised_at_ip = ip;
-                //bytecode::disassemble_maybe_function(std::cout, "SIGNAL", ip);
                 Handler_Case restore;
                 Signal_Handler handler;
                 if (find_handler(first(signal_args), true, restore, handler))
@@ -739,7 +736,9 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                         signal_args = cdr(signal_args);
                     }
                     func = handler.handler;
-                    nargs = 0;
+                    nargs = 1;
+                    auto ctx = gc.alloc_object<Signal_Context>(first(signal_args), ip);
+                    push_param(ctx);
                     while (!signal_args.is_nil())
                     {
                         ++nargs;
@@ -751,11 +750,16 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                 }
                 else
                 {
+                    Signal_Context *ctx = nullptr;
+                    if (first(signal_args).is_type(Object_Type::Signal_Context))
+                    {
+                        ctx = first(signal_args).as_object()->signal_context();
+                    }
                     auto top = m_call_frame_top;
                     auto bottom = m_call_frame_bottom;
                     m_call_frame_top = m_call_frame_bottom;
                     m_stack_top = m_stack_bottom;
-                    throw Signal_Exception(signal_args, signal_raised_at_ip, top, bottom);
+                    throw Signal_Exception(signal_args, ip, top, bottom, ctx);
                 }
             }
 

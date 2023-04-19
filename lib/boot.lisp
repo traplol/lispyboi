@@ -58,6 +58,7 @@
 
    exit
    signal
+   signal-context
    error
    errno
    errno-str
@@ -1118,6 +1119,13 @@ may be provided or left NIL."
 (defun read (&optional (stm *standard-input*) (eof-error-p t) eof-value)
   (kernel::%read stm eof-error-p eof-value))
 
+(defmacro handler-case (&body body)
+  (let ((form (car body))
+        (handlers (cdr body)))
+    (dolist (handler handlers)
+      (setf (nth 1 handler) (cons 'signal-context (nth 1 handler))))
+    (cons 'kernel::%handler-case body)))
+
 (defmacro unwind-protect (protected &body cleanup)
   (let ((args (gensym "ARGS"))
         (result (gensym "RESULT"))
@@ -1130,7 +1138,7 @@ may be provided or left NIL."
          (t (,sig &rest ,args)
            ,@cleanup
            (unless (eq ,sig ',clean-throw)
-             (apply #'kernel::%signal ,sig ,args))))
+             (signal signal-context))))
        ,result)))
 
 (defmacro ignore-errors (&body body)
