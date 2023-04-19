@@ -731,13 +731,13 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     // By default signal_args includes the handler tag and a specific handler knows its
                     // own tag because it is labeled as such. In the case of a handler with the T tag it
                     // is unknown so we leave it, otherwise it is removed.
+                    auto ctx = gc.alloc_object<Signal_Context>(first(signal_args), ip, signal_args);
                     if (handler.tag != g.s_T)
                     {
                         signal_args = cdr(signal_args);
                     }
                     func = handler.handler;
                     nargs = 1;
-                    auto ctx = gc.alloc_object<Signal_Context>(first(signal_args), ip);
                     push_param(ctx);
                     while (!signal_args.is_nil())
                     {

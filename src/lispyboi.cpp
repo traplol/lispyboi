@@ -3545,6 +3545,9 @@ void trace_signal_exception(VM_State &vm, const VM_State::Signal_Exception &e)
             ctx = ctx->tag().as_object()->signal_context();
         }
         bytecode::disassemble_maybe_function(std::cout, "WHOOPS", ctx->ip());
+        printf("ERROR: %s\n", repr(e.what).c_str());
+        printf("       %s\n", repr(ctx->tag()).c_str());
+        printf("       %s\n", repr(ctx->args()).c_str());
     }
     else
     {
@@ -3564,8 +3567,8 @@ void trace_signal_exception(VM_State &vm, const VM_State::Signal_Exception &e)
         {
             bytecode::disassemble_maybe_function(std::cout, "WHOOPS", e.ip);
         }
+        printf("ERROR: %s\n", repr(e.what).c_str());
     }
-    printf("ERROR: %s\n", repr(e.what).c_str());
     //auto signal = car(e.what);
     //auto signal_args = cdr(e.what);
 }

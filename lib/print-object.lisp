@@ -117,8 +117,4 @@ OBJECT should be returned")
 (defmethod print-object ((o signal-context) stream)
   (format stream (kernel::%repr o)))
 
-;; TODO: print-object needs to implement defaul printer
-;; (defmethod print-object ((o *) stream)
-;;  (format stream "#<PRINT-OBJECT not implemented for ~S>" (type-of o)))
-
 (export '(print-object))

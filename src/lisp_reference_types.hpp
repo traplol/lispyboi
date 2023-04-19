@@ -530,9 +530,10 @@ struct Closure
 
 struct Signal_Context
 {
-    Signal_Context(Value tag, const uint8_t *ip)
+    Signal_Context(Value tag, const uint8_t *ip, Value args)
         : m_tag(tag)
         , m_ip(ip)
+        , m_args(args)
     {
 
     }
@@ -547,9 +548,15 @@ struct Signal_Context
         return m_ip;
     }
 
+    Value args() const
+    {
+        return m_args;
+    }
+
   private:
     Value m_tag;
     const uint8_t *m_ip;
+    Value m_args;
 };
 
 struct Object

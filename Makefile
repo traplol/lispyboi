@@ -1,4 +1,4 @@
-CC := clang++-15
+CC := clang++
 CFLAGS := -std=c++17 -Wall -Wno-unused-function
 LDFLAGS := -ldl -fPIE 
 
@@ -13,7 +13,7 @@ all: debug1
 debug: debug1
 
 debug3: CFLAGS += -O0 -g3 -DDEBUG=3
-debug3: CFLAGS += -fsanitize=address -fsanitize-recover=all
+#debug3: CFLAGS += -fsanitize=address -fsanitize-recover=all
 debug3: _debug
 
 debug2: CFLAGS += -O0 -g3 -DDEBUG=2
