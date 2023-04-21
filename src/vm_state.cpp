@@ -27,29 +27,48 @@ int VM_State::stack_dump(std::ostream &out, size_t max_size) const
 
     auto r_stack_delta = rt - rb;
     out << std::setfill(' ') << std::dec;
-    out << "|R-stack " << std::setw(9) << r_stack_delta << " |         P-stack\n";
-    out << "|==================|================\n";
+    out << "|R-stack depth=" << r_stack_delta << '\n';
+    out << "|===================================\n";
     out << std::setfill('0');
-    for (;max_size != 0; max_size--)
+
+    for (size_t i = max_size; i != 0; --i)
     {
         rt--;
-        pt--;
         if (reinterpret_cast<uintptr_t>(rt) < reinterpret_cast<uintptr_t>(rb))
         {
-            out << "| **************** |";
+            out << "| ****************  ";
         }
         else
         {
-            out << "| " << std::hex << std::setw(16) << reinterpret_cast<uintptr_t>(rt->ip) << " |";
+            out << "| " << std::hex << std::setw(16) << reinterpret_cast<uintptr_t>(rt->ip) << "  ";
+            if (auto symbol = bytecode::find_symbol_with_function(rt->ip))
+            {
+                out << symbol->qualified_name();
+            }
+            else
+            {
+                out << "<Anonymous Closure>";
+            }
         }
+        out << '\n';
+    }
+
+    out << std::setfill(' ') << std::dec;
+    out << "|P-stack \n";
+    out << "|===================================\n";
+    out << std::setfill('0');
+
+    for (size_t i = max_size; i != 0; --i)
+    {
+        pt--;
 
         if (reinterpret_cast<uintptr_t>(pt) < reinterpret_cast<uintptr_t>(pb))
         {
-            out << "                ";
+            out << "|                ";
         }
         else
         {
-            out << std::hex << std::setw(16) << reinterpret_cast<uintptr_t>(pt);
+            out << "| " << std::hex << std::setw(16) << reinterpret_cast<uintptr_t>(pt);
         }
         if (pt == m_locals)
         {
@@ -99,13 +118,18 @@ int VM_State::stack_dump(std::ostream &out, size_t max_size) const
     return lines_printed;
 }
 
-void VM_State::debug_dump(std::ostream &out, const std::string &tag, const uint8_t *ip, bool full) const
+void VM_State::debug_dump(std::ostream &out, std::string tag, const uint8_t *ip, bool full) const
 {
     //plat::clear_console();
     const Function *function;
     int lines_printed = 0;
     if (bytecode::Debug_Info::find_function(ip, &function))
     {
+        if (auto symbol = bytecode::find_symbol_with_function(ip))
+        {
+            tag = symbol->qualified_name();
+        }
+
         std::vector<const uint8_t*> instructions;
         int ip_at = -1;
         for (auto it = function->begin(); it != function->end();)
@@ -154,10 +178,10 @@ void VM_State::debug_dump(std::ostream &out, const std::string &tag, const uint8
         lines_printed = bytecode::disassemble(out, tag, ip, true);
     }
 
-    for (; lines_printed <= 32; lines_printed++)
-    {
-        out << "\n";
-    }
+    //for (; lines_printed <= 32; lines_printed++)
+    //{
+    //    out << "\n";
+    //}
 
     if (full)
     {
@@ -167,6 +191,19 @@ void VM_State::debug_dump(std::ostream &out, const std::string &tag, const uint8
     {
         stack_dump(out);
     }
+}
+
+Value VM_State::alloc_signal_context(Value signal_args, const uint8_t *ip)
+{
+    Value ctx;
+    std::vector<const uint8_t*> call_trace;
+    call_trace.push_back(ip);
+    for (auto p = m_call_frame_top; p != m_call_frame_bottom; --p)
+    {
+        call_trace.push_back(p->ip);
+    }
+    ctx = gc.alloc_object<Signal_Context>(first(signal_args), ip, signal_args, call_trace);
+    return ctx;
 }
 
 template<bool debuggable>
@@ -731,7 +768,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     // By default signal_args includes the handler tag and a specific handler knows its
                     // own tag because it is labeled as such. In the case of a handler with the T tag it
                     // is unknown so we leave it, otherwise it is removed.
-                    auto ctx = gc.alloc_object<Signal_Context>(first(signal_args), ip, signal_args);
+                    auto ctx = alloc_signal_context(signal_args, ip);
                     if (handler.tag != g.s_T)
                     {
                         signal_args = cdr(signal_args);

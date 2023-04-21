@@ -188,11 +188,22 @@ const Symbol *find_symbol_with_function(const Function *function)
     return nullptr;
 }
 
+const Symbol *find_symbol_with_function(const uint8_t *ip)
+{
+    const Function *func;
+    if (Debug_Info::find_function(ip, &func))
+    {
+        return find_symbol_with_function(func);
+    }
+    return nullptr;
+}
+
 int disassemble(std::ostream &out, const std::string &tag, const uint8_t *ip, bool here/* = false*/)
 {
     put_disassembly_tag(out, tag);
     disassemble1(out, ip, here);
-    return 2;
+    const int lines_printed = 2;
+    return lines_printed;
 }
 
 int disassemble(std::ostream &out, const std::string &tag, const uint8_t *start, const uint8_t *end, const uint8_t *ip/* = nullptr*/)
@@ -237,9 +248,20 @@ int disassemble_maybe_function(std::ostream &out, std::string tag, const uint8_t
         return disassemble(out, tag, func, ip);
     }
 
-    put_disassembly_tag(out, tag);
-    disassemble1(out, ip, here);
-    return 2;
+    if (ip == nullptr)
+    {
+        const int lines_printed = 2;
+        put_disassembly_tag(out, tag);
+        out << "<Native Code>\n";
+        return lines_printed;
+    }
+    else
+    {
+        const int lines_printed = 2;
+        put_disassembly_tag(out, tag);
+        disassemble1(out, ip, here);
+        return lines_printed;
+    }
 }
 
 }

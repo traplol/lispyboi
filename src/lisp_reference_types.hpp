@@ -530,12 +530,25 @@ struct Closure
 
 struct Signal_Context
 {
+    Signal_Context(Value tag, const uint8_t *ip, Value args, std::vector<const uint8_t*>call_stack_trace)
+        : m_tag(tag)
+        , m_ip(ip)
+        , m_args(args)
+        , m_call_stack_trace(std::move(call_stack_trace))
+    {
+
+    }
+
     Signal_Context(Value tag, const uint8_t *ip, Value args)
         : m_tag(tag)
         , m_ip(ip)
         , m_args(args)
     {
 
+    }
+
+    ~Signal_Context()
+    {
     }
 
     Value tag() const
@@ -553,10 +566,16 @@ struct Signal_Context
         return m_args;
     }
 
+    const std::vector<const uint8_t*> call_stack_trace() const
+    {
+        return m_call_stack_trace;
+    }
+
   private:
     Value m_tag;
     const uint8_t *m_ip;
     Value m_args;
+    std::vector<const uint8_t*> m_call_stack_trace;
 };
 
 struct Object
@@ -691,7 +710,7 @@ struct Object
             case Object_Type::System_Pointer: break;
             case Object_Type::Structure: structure()->~Structure(); break;
             case Object_Type::Float: break;
-            case Object_Type::Signal_Context: break;
+            case Object_Type::Signal_Context: signal_context()->~Signal_Context(); break;
         }
     }
 

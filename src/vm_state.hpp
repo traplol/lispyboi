@@ -169,7 +169,7 @@ struct VM_State
 
     Value call_lisp_function(Value function_or_symbol, Value *args, uint32_t nargs);
 
-    void debug_dump(std::ostream &out, const std::string &tag, const uint8_t *ip, bool full = false) const;
+    void debug_dump(std::ostream &out, std::string tag, const uint8_t *ip, bool full = false) const;
     int stack_dump(std::ostream &out, size_t max_size = 15) const;
 
     struct Signal_Handler
@@ -314,6 +314,7 @@ struct VM_State
         }
     }
 
+    Value alloc_signal_context(Value signal_args, const uint8_t *ip);
 
     Value m_current_closure;
     Value *m_locals;

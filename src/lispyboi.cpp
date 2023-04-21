@@ -362,6 +362,7 @@ Value GC::alloc_string(const std::string &str)
 
 
 static void set_global(compiler::Scope *scope, Value symbol_value, Value value);
+static void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope);
 
 struct Function_Initializer
 {
@@ -1548,23 +1549,12 @@ DEFUN("%EVAL", func_eval, g.kernel_str(), false)
 
     try
     {
-        bytecode::Emitter e(compiler::THE_ROOT_SCOPE);
-
-        auto expanded = macro_expand_impl(expr, *vm);
+        compile_execute(*vm, expr, *compiler::THE_ROOT_SCOPE);
         gc.unpin_value(expr_handle);
-
-        compiler::compile(e, expanded, true, false);
-        e.emit_halt();
-        e.lock();
-
-        g.resize_globals(compiler::THE_ROOT_SCOPE->locals().size());
-
-        vm->push_frame(nullptr, 0);
-
-        vm->execute(e.bytecode().data());
     }
     catch (VM_State::Signal_Exception e)
     {
+        gc.unpin_value(expr_handle);
         vm->restore(save);
         raised_signal = true;
         return e.what;
@@ -3545,6 +3535,27 @@ void trace_signal_exception(VM_State &vm, const VM_State::Signal_Exception &e)
             ctx = ctx->tag().as_object()->signal_context();
         }
         bytecode::disassemble_maybe_function(std::cout, "WHOOPS", ctx->ip());
+
+        //printf("====== Call Stack Trace ======\n");
+        //auto &trace = ctx->call_stack_trace();
+        //for (size_t i = 0; i < trace.size(); ++i)
+        //{
+        //    auto ip = trace[(trace.size() - i) - 1];
+        //    if (ip == nullptr)
+        //    {
+        //        std::cout << "Cannot disassemble <Native Code>\n";
+        //    }
+        //    else if (auto symbol = bytecode::find_symbol_with_function(ip))
+        //    {
+        //        bytecode::disassemble_maybe_function(std::cout, symbol->qualified_name(), ip);
+        //    }
+        //    else
+        //    {
+        //        bytecode::disassemble_maybe_function(std::cout, "<Anonymouse Closure>", ip);
+        //    }
+        //}
+        //printf("====== End Call Stack Trace ======\n");
+
         printf("ERROR: %s\n", repr(e.what).c_str());
         printf("       %s\n", repr(ctx->tag()).c_str());
         printf("       %s\n", repr(ctx->args()).c_str());
@@ -3572,6 +3583,23 @@ void trace_signal_exception(VM_State &vm, const VM_State::Signal_Exception &e)
     //auto signal = car(e.what);
     //auto signal_args = cdr(e.what);
 }
+
+static
+void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope)
+{
+    auto expanded = macro_expand_impl(expr, vm);
+
+    bytecode::Emitter e(&root_scope);
+    compiler::compile(e, expanded, true, false);
+    e.emit_halt();
+    e.lock();
+
+    g.resize_globals(compiler::THE_ROOT_SCOPE->locals().size());
+
+    vm.push_frame(nullptr, 0);
+    vm.execute(e.bytecode().data());
+}
+
 
 bool eval_file(VM_State &vm, compiler::Scope &root_scope, const std::filesystem::path &path)
 {
@@ -3618,21 +3646,12 @@ bool eval_file(VM_State &vm, compiler::Scope &root_scope, const std::filesystem:
                 auto out_handle = gc.pin_value(out);
                 try
                 {
-                    auto expanded = macro_expand_impl(out, vm);
+                    compile_execute(vm, out, root_scope);
                     gc.unpin_value(out_handle);
-
-                    bytecode::Emitter e(&root_scope);
-                    compiler::compile(e, expanded, true, false);
-                    e.emit_halt();
-                    e.lock();
-
-                    g.resize_globals(root_scope.locals().size());
-
-                    vm.push_frame(nullptr, 0);
-                    vm.execute(e.bytecode().data());
                 }
                 catch (VM_State::Signal_Exception e)
                 {
+                    gc.unpin_value(out_handle);
                     trace_signal_exception(vm, e);
                     return false;
                 }
@@ -3701,18 +3720,8 @@ void run_repl(VM_State &vm, compiler::Scope &root_scope)
             auto out_handle = gc.pin_value(out);
             try
             {
-                auto expanded = macro_expand_impl(out, vm);
+                compile_execute(vm, out, root_scope);
                 gc.unpin_value(out_handle);
-
-                bytecode::Emitter e(&root_scope);
-                compiler::compile(e, expanded, true, false);
-                e.emit_halt();
-                e.lock();
-
-                g.resize_globals(root_scope.locals().size());
-
-                vm.push_frame(nullptr, 0);
-                vm.execute(e.bytecode().data());
             }
             catch (VM_State::Signal_Exception e)
             {

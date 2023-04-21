@@ -18,6 +18,7 @@ const uint8_t *disassemble1(std::ostream &out, const uint8_t *ip, bool here);
 int put_disassembly_tag(std::ostream &out, const std::string &tag);
 
 const Symbol *find_symbol_with_function(const Function *function);
+const Symbol *find_symbol_with_function(const uint8_t *ip);
 
 int disassemble(std::ostream &out, const std::string &tag, const uint8_t *ip, bool here = false);
 
