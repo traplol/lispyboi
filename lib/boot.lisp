@@ -95,6 +95,7 @@
 
    progn
    prog1
+   prog2
    when
    unless
    while
@@ -673,6 +674,14 @@ may be provided or left NIL."
            ,@(cdr body)
            ,tmp-var-name))))
 
+(defmacro prog2 (form1 result &body body)
+  (let ((tmp-var-name (gensym)))
+    `(let ((,tmp-var-name ))
+       ,form1
+       (setf ,tmp-var-name ,result)
+       ,@(cdr body)
+       ,tmp-var-name)))
+
 (defmacro or (&rest exprs)
   (labels ((or-helper (args)
              (if (null (cdr args))
@@ -1205,9 +1214,9 @@ may be provided or left NIL."
            (with-open-file (file full-path 'read)
              (if (kernel::%file-ok-p file)
                  (until (kernel::%file-eof-p file)
-                   (handler-case
-                       (kernel::%eval (read file t))
-                     (end-of-file () 'ok)))
+                        (handler-case
+                            (kernel::%eval (read file t))
+                          (end-of-file () 'ok)))
                  (signal 'load-error "Cannot open file" file-path full-path)))
         (change-directory here-dir)
         (in-package here-package)
