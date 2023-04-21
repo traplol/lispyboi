@@ -36,5 +36,6 @@
            (run-test "tests/test_stream.lisp")
            (run-test "tests/test_string.lisp")
            (run-test "tests/test_typep.lisp")
-           (run-test "tests/test_unwind-protect.lisp"))
+           (run-test "tests/test_unwind-protect.lisp")
+           (run-test "tests/test_ffi-size-and-offsets.lisp"))
          (format t "Tests completed in ~dms~%" test-time))
