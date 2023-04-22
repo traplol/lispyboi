@@ -16,7 +16,7 @@
        '(uint16 2 nil nil) '(int16 2 nil nil)
        '(uint32 4 nil nil) '(int32 4 nil nil)
        '(uint64 8 nil nil) '(int64 8 nil nil)
-       '(char 1 nil nil 1)
+       '(char 1 nil nil)
        '(short 2 nil nil)
        '(int 4 nil nil)
        '(long 8 nil nil)
@@ -167,32 +167,43 @@
   (let* ((field-names (map1 #'first body))
          (field-sizes (map1 (lambda (e) (%ffi-sizeof (second e))) body))
          (field-types (map1 #'second body))
+         (field-arrays (map1 #'third body))
          (total-size 0)
+         (last-field-size 0)
          (needs-pointer-align nil)
          (stride-alignment (%ffi-stride-alignment-size (map #'cons field-types field-sizes)))
          (field-offsets (let ((offset 0))
-                          (map (lambda (field field-type size)
+                          (map (lambda (field field-type size array-count)
                                  (when (%ffi-pointer-type-p field-type)
                                    (setf needs-pointer-align t))
-                                 (incf total-size size)
+                                 ;;(incf total-size size)
                                  (let ((new-offs (%ffi-align-up offset
                                                                 (if (< size stride-alignment)
                                                                     size
                                                                     stride-alignment))))
-                                   (incf total-size (- new-offs offset))
+                                   (setf total-size new-offs)
                                    (setf offset new-offs))
-                                 (prog1 (list field field-type offset)
+                                 (prog1 (list field field-type offset (or array-count 1))
+                                   (setf last-field-size (* size (or array-count 1)))
+                                   (when array-count
+                                     ;;(format t "field-array: f=~a t=~a s=~a n=~a~%" field field-type size array-count)
+                                     
+                                     (incf offset (* size array-count)))
                                    (incf offset size)))
                                field-names
                                field-types
-                               field-sizes))))
+                               field-sizes
+                               field-arrays))))
+    (incf total-size last-field-size)
     (if needs-pointer-align
         (setf total-size (%ffi-align-up total-size (ffi-machine-pointer-size)))
         (setf total-size (%ffi-align-up total-size stride-alignment)))
     (when nil
+      (format t "body ~a~%" body)
       (format t "struct ~a (~a) field offsets:~%" struct-name total-size)
       (dolist (e field-offsets)
-        (format t "  ~a ~a @ ~a (~a)~%" (first e) (second e) (third e) (ffi-sizeof (second e)))))
+        (format t "  ~a ~a @ ~a (~a)~%" (first e) (second e) (third e) (* (ffi-sizeof (second e))
+                                                                          (fourth e)))))
     (%ffi-define-struct-or-union struct-name 'struct field-names field-sizes field-types field-offsets total-size stride-alignment)))
 
 (defmacro ffi-defunion (union-name &body body)
@@ -289,10 +300,28 @@
             ,@(map1 (lambda (e)
                       `(,(first e) (ffi-get-symbol-or-signal ,lib-var ,(second e))))
                     symbols))
-       (flet (,@(map1 (lambda (e)
-                        `(,(first e) (&rest args) (apply #'ffi-call ,(first e) args)))
-                  symbols))
-         ,@body))))
+       
+       (macrolet (,@(map1 (lambda (e)
+                            (let ((args '(unquote-splicing args))
+                                  (return-type (third e)))
+                              (cond ((eq 'void return-type)
+                                     `(,(first e) (&rest args)
+                                       `(ffi-call-void ,(first e) ,args)))
+                                    ((member return-type '(char byte uint8 int8
+                                                           short uint16 int16
+                                                           int uint32 int32
+                                                           long uint64 int64))
+                                     `(,(first e) (&rest args)
+                                       `(ffi-coerce-int (ffi-call ,(first e) ,args))))
+                                    (t
+                                     `(,(first e) (&rest args)
+                                       `(ffi-call ,(first e) ,args))))
+
+                              ))
+                      symbols))
+         ,@body)
+
+       )))
 
 
 (defmethod print-object ((o system-pointer) stream)
