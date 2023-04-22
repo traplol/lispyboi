@@ -81,6 +81,7 @@
    and
    or
    symbol-macrolet
+   macrolet
    let
    let*
    flet
@@ -862,7 +863,7 @@ may be provided or left NIL."
     access-fn)
 
   (defun get-setf-expansion (form)
-    (flet ((err (e) (error "no SETF expansion for" e)))
+    (flet ((err (e) (signal 'error "no SETF expansion for" e)))
       (cond ((symbolp form)
              `(setq ,form))
             ((consp form)
@@ -1284,15 +1285,16 @@ may be provided or left NIL."
             (setq verify-key-args-code
                   (let ((tmp-var (gensym "TEMP")))
                     `(let ((,tmp-var ,rest-variable))
-                         (while ,tmp-var
+                       (while ,tmp-var
                           (cond ((member (car ,tmp-var)
                                          '(,@key-arg-keywords :allow-other-keys))
                                  (setq ,tmp-var (cddr ,tmp-var)))
                                 ((second (member :allow-other-keys ,rest-variable))
                                  (setq ,tmp-var nil))
                                 (t
-                                 (signal 'simple-error "Keyword argument is not one of" ',key-arg-keywords
-                                        (car ,tmp-var)))))))))
+                                 (signal 'simple-error "Keyword argument is not one of" '
+                                         ,key-arg-keywords
+                                         (car ,tmp-var)))))))))
           `(kernel::%lambda ,new-lambda-list
              (let* (,@(map
                         (lambda (symbol keyword default)
@@ -1308,6 +1310,21 @@ may be provided or left NIL."
                ,verify-key-args-code
                ,@body)))
         (cons 'kernel::%lambda (cons lambda-list body)))))
+
+
+(defmacro macrolet (lambda-list &body body)
+  (dolist (e lambda-list)
+    (let ((macro-name (first e))
+          (macro-args (second e))
+          (macro-body (cddr e)))
+      (setq body (%lexical-walk-replace body
+                                          (lambda (e)
+                                            (when (and (consp e) (eq (car e) macro-name))
+                                              (eval `((lambda (,@macro-args) ,@macro-body)
+                                                      ,@(map1 (lambda (e) (list 'quote e))
+                                                              (cdr e))))))))))
+  (cons 'progn body))
+
 
 (load "modules.lisp")
 (provide "boot")
