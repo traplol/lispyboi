@@ -42,9 +42,9 @@ void *do_call(void *f, Args... args)
     return func(args...);
 }
 
+#define M(n) (args[n])
 void *ffi::call(void *f, void **args, uint32_t nargs)
 {
-#define M(n) (args[n])
     switch (nargs) {
         case  0: return do_call(f);
         case  1: return do_call(f, M(0));
@@ -65,4 +65,28 @@ void *ffi::call(void *f, void **args, uint32_t nargs)
     }
     fprintf(stderr, "ffi call with more than 16 arguments is no supported\n");
     return nullptr;
+}
+
+void ffi::call_void(void *f, void **args, uint32_t nargs)
+{
+    switch (nargs) {
+        case  0: do_call(f); break;
+        case  1: do_call(f, M(0)); break;
+        case  2: do_call(f, M(0), M(1)); break;
+        case  3: do_call(f, M(0), M(1), M(2)); break;
+        case  4: do_call(f, M(0), M(1), M(2), M(3)); break;
+        case  5: do_call(f, M(0), M(1), M(2), M(3), M(4)); break;
+        case  6: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5)); break;
+        case  7: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6)); break;
+        case  8: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7)); break;
+        case  9: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7), M(8)); break;
+        case 10: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7), M(8), M(9)); break;
+        case 11: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7), M(8), M(9), M(10)); break;
+        case 12: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7), M(8), M(9), M(10), M(11)); break;
+        case 13: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7), M(8), M(9), M(10), M(11), M(12)); break;
+        case 14: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7), M(8), M(9), M(10), M(11), M(12), M(13)); break;
+        case 15: do_call(f, M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7), M(8), M(9), M(10), M(11), M(12), M(13), M(14)); break;
+        default:
+            fprintf(stderr, "ffi call with more than 16 arguments is no supported\n");
+    }
 }

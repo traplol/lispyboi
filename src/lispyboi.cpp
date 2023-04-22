@@ -2531,6 +2531,35 @@ DEFUN("FFI-CALL", func_ffi_call, g.kernel_str(), true)
     return gc.alloc_object<System_Pointer>(result);
 }
 
+DEFUN("FFI-CALL-VOID", func_ffi_call_void, g.kernel_str(), true)
+{
+    /***
+        (ffi-call-void c-function &rest args)
+     */
+    CHECK_NARGS_AT_LEAST(1);
+    CHECK_SYSTEM_POINTER(args[0]);
+    auto func = args[0].as_object()->system_pointer();
+    std::vector<void *> marshalled;
+    for (uint32_t i = 1; i < nargs; ++i)
+    {
+        void *m = nullptr;
+        if (ffi_try_marshal(args[i], &m))
+        {
+            marshalled.push_back(m);
+        }
+        else
+        {
+            raised_signal = true;
+            GC_GUARD();
+            auto res = gc.list(g.s_MARSHAL_ERROR, gc.alloc_string("Cannot marshal object"), args[i]);
+            GC_UNGUARD();
+            return res;
+        }
+    }
+    ffi::call_void(func, marshalled.data(), marshalled.size());
+    return Value::nil();
+}
+
 DEFUN("FFI-NULLPTR", func_ffi_nullptr, g.kernel_str(), true)
 {
     /***

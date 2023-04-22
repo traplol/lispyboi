@@ -10,6 +10,7 @@ int close(void *handle);
 
 void *getsym(void *handle, const char *symbol_name);
 void *call(void *function, void **args, uint32_t nargs);
+void call_void(void *function, void **args, uint32_t nargs);
 void *alloc_mem(size_t size);
 void *calloc_mem(size_t size);
 void free_mem(void *ptr);
