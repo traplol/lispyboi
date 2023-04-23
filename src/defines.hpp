@@ -40,7 +40,9 @@
 #define FORCE_INLINE inline __attribute__((always_inline))
 #define FLATTEN __attribute__((flatten))
 #define GC_NO_OPT 0
+#if !defined(USE_TAILCALLS) || USE_TAILCALLS == 0
 #define USE_COMPUTED_GOTOS 1
+#endif
 
 #else
 #define FORCE_INLINE
@@ -56,6 +58,10 @@
 #define USE_COMPUTED_GOTOS 0
 #endif
 
+#if !defined(USE_TAILCALLS)
+#define USE_TAILCALLS 0
+#endif
+
 #if !defined(GC_NO_OPT)
 #define GC_NO_OPT 1
 #endif
@@ -65,6 +71,10 @@
 #warning "Profiling opcode pairs is enabled."
 #else
 #define PROFILE_OPCODE_PAIRS 0
+#endif
+
+#if USE_COMPUTED_GOTOS && USE_TAILCALLS
+#error "Cannot use both computed gotos and tailcalls"
 #endif
 
 #endif

@@ -177,14 +177,6 @@ struct hash<lisp::Value>
 
 }
 
-#define TYPE_CHECK(what, typecheck, expected)                           \
-    do {                                                                \
-        if (!(what).typecheck) {                                        \
-            signal_args = gc.list(g.s_TYPE_ERROR, (expected), (what));  \
-            goto raise_signal;                                          \
-        }                                                               \
-    } while (0)
-
 #define CHECK_FIXNUM(what) TYPE_CHECK(what, is_fixnum(), g.s_FIXNUM)
 #define CHECK_CONS(what) TYPE_CHECK(what, is_cons(), g.s_CONS)
 #define CHECK_LIST(what) TYPE_CHECK(what, is_list(), g.s_LIST)

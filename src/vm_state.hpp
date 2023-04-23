@@ -72,7 +72,7 @@ struct VM_State
         , m_open_closure_references(nullptr)
     {
         m_locals = m_stack_top = m_stack_bottom = new Value[0x100000];
-        m_call_frame_top = m_call_frame_bottom = new Call_Frame[0x10000];
+        m_call_frame_top = m_call_frame_bottom = new Call_Frame[0x100000];
         gc.register_marking_function([this](GC &gc) { gc_mark(gc); });
     }
 
@@ -162,6 +162,8 @@ struct VM_State
             return execute_impl<true>(ip);
         }
         return execute_impl<false>(ip);
+#elif USE_TAILCALLS
+        return execute_impl_tailcalls(ip);
 #else
         return execute_impl<true>(ip);
 #endif
@@ -233,10 +235,6 @@ struct VM_State
     }
     #endif
 
-  private:
-    template<bool debuggable>
-    const uint8_t *execute_impl(const uint8_t *ip);
-
     void push_handler_case(std::vector<Signal_Handler> &&handlers)
     {
         m_handler_cases.push_back({m_stack_top, m_call_frame_top, std::move(handlers)});
@@ -248,33 +246,6 @@ struct VM_State
     }
 
     bool find_handler(Value tag, bool auto_pop, Handler_Case &out_case_state, Signal_Handler &out_handler);
-
-    void gc_mark(GC &gc)
-    {
-        for (auto p = m_stack_bottom; p != m_stack_top; ++p)
-        {
-            gc.mark_value(*p);
-        }
-
-        // Ensure our stack of closures don't accidently get GC
-        for (auto p = m_call_frame_bottom; p != m_call_frame_top; ++p)
-        {
-            gc.mark_value(p->current_closure);
-        }
-
-        gc.mark_value(m_current_closure);
-
-        gc.mark_closure_reference(m_open_closure_references);
-
-        for (auto &handler_case : m_handler_cases)
-        {
-            for (auto &handler : handler_case.handlers)
-            {
-                gc.mark_value(handler.tag);
-                gc.mark_value(handler.handler);
-            }
-        }
-    }
 
     Closure_Reference *capture_closure_reference(Value *local)
     {
@@ -315,6 +286,38 @@ struct VM_State
     }
 
     Value alloc_signal_context(Value signal_args, const uint8_t *ip);
+
+    template<bool debuggable>
+    const uint8_t *execute_impl(const uint8_t *ip);
+
+    const uint8_t *execute_impl_tailcalls(const uint8_t *ip);
+
+    void gc_mark(GC &gc)
+    {
+        for (auto p = m_stack_bottom; p != m_stack_top; ++p)
+        {
+            gc.mark_value(*p);
+        }
+
+        // Ensure our stack of closures don't accidently get GC
+        for (auto p = m_call_frame_bottom; p != m_call_frame_top; ++p)
+        {
+            gc.mark_value(p->current_closure);
+        }
+
+        gc.mark_value(m_current_closure);
+
+        gc.mark_closure_reference(m_open_closure_references);
+
+        for (auto &handler_case : m_handler_cases)
+        {
+            for (auto &handler : handler_case.handlers)
+            {
+                gc.mark_value(handler.tag);
+                gc.mark_value(handler.handler);
+            }
+        }
+    }
 
     Value m_current_closure;
     Value *m_locals;

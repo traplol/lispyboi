@@ -7,6 +7,14 @@
 #include "bytecode/disassemble.hpp"
 #include "vm_state.hpp"
 
+#define TYPE_CHECK(what, typecheck, expected)                           \
+    do {                                                                \
+        if (!(what).typecheck) {                                        \
+            signal_args = gc.list(g.s_TYPE_ERROR, (expected), (what));  \
+            goto raise_signal;                                          \
+        }                                                               \
+    } while (0)
+
 using namespace lisp;
 
 VM_State *lisp::THE_LISP_VM;
