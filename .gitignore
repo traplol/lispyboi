@@ -4,3 +4,5 @@ lispyboi*
 peda-*
 /obj/
 /junk/
+/tmp/
+perf.data*
