@@ -56,6 +56,13 @@ struct Value
     {}
 
     FORCE_INLINE
+    // implicit conversion from Value to Bits_Type
+    operator Bits_Type() const noexcept
+    {
+        return m_bits;
+    }
+
+    FORCE_INLINE
     bool operator==(const Value &other) const noexcept
     {
         return m_bits == other.m_bits;

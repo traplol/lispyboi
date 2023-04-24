@@ -17,17 +17,22 @@
 
 using namespace lisp;
 
-enum class Call_Type
+enum Call_Type
 {
     Doesnt_Push_Frame,
     Pushes_Frame,
 };
 
-#define OPCODE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (const uint8_t *ip, VM_State &vm, Call_Type call_type, Value func, uint32_t nargs, Value signal_args)
+//#define OPCODE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (const uint8_t *ip, VM_State &vm, Value::Bits_Type call_type, Value::Bits_Type func, uint32_t nargs, Value::Bits_Type signal_args)
+#define OPCODE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (const uint8_t *ip, VM_State &vm, Value::Bits_Type aux1, Value::Bits_Type aux2, Value::Bits_Type aux3, Value::Bits_Type aux4)
+#define call_type aux1
+#define func aux2
+#define nargs aux3
+#define signal_args aux4
 
 #define DISPATCH_NEXT [[clang::musttail]]return execute_table[*ip](ip, vm, call_type, func, nargs, signal_args)
 #define TAILCALL(name) [[clang::musttail]]return execute_ ## name(ip, vm, call_type, func, nargs, signal_args)
-#define TAILCALLABLE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (const uint8_t *ip, VM_State &vm, Call_Type call_type, Value func, uint32_t nargs, Value signal_args)
+#define TAILCALLABLE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (const uint8_t *ip, VM_State &vm, Value::Bits_Type call_type, Value::Bits_Type func, Value::Bits_Type nargs, Value::Bits_Type signal_args)
 
 // Forward Declarations
 #define BYTECODE_DEF(name, noperands, nargs, size, docstring) OPCODE(name);
@@ -41,9 +46,6 @@ constexpr std::array execute_table =
     {
         #include "bytecode.def"
     };
-
-#define PREDICT(name) // empty
-#define PREDICTED(name) // empty
 
 OPCODE(apply)
 {
@@ -71,7 +73,6 @@ OPCODE(apply)
 
 OPCODE(funcall)
 {
-    PREDICTED(funcall);
     func = vm.pop_param();
     nargs = *reinterpret_cast<const uint32_t*>(ip+1);
     [[clang::musttail]] return execute_shared_do_funcall(ip, vm, Call_Type::Pushes_Frame, func, nargs, signal_args);
@@ -94,12 +95,12 @@ OPCODE(gotocall)
 
 TAILCALLABLE(funcall_too_few_args)
 {
-    auto closure = func.as_object()->closure();
+    auto closure = Value(func).as_object()->closure();
     auto function = closure->function();
     GC_GUARD();
     signal_args = gc.list(g.s_SIMPLE_ERROR,
                           gc.alloc_string("Too few arguments!"),
-                          func,
+                          Value(func),
                           Value::wrap_fixnum(function->arity()),
                           Value::wrap_fixnum(nargs));
     GC_UNGUARD();
@@ -108,30 +109,73 @@ TAILCALLABLE(funcall_too_few_args)
 
 TAILCALLABLE(funcall_too_many_args)
 {
-    auto closure = func.as_object()->closure();
+    auto closure = Value(func).as_object()->closure();
     auto function = closure->function();
     GC_GUARD();
     signal_args = gc.list(g.s_SIMPLE_ERROR,
                           gc.alloc_string("Too many arguments!"),
-                          func,
+                          Value(func),
                           Value::wrap_fixnum(function->arity()),
                           Value::wrap_fixnum(nargs));
     GC_UNGUARD();
     TAILCALL(shared_do_raise_signal);
 }
 
-TAILCALLABLE(shared_do_funcall)
+TAILCALLABLE(funcall_call_primitive)
 {
-    auto ofunc = func;
-    if (func.is_type(Object_Type::Closure))
-        goto skip_lookup;
-
-    if (symbolp(func))
+    bool raised_signal = false;
+    auto primitive = Value(func).as_lisp_primitive();
+    auto result = primitive(vm.m_stack_top - nargs, nargs, raised_signal);
+    vm.m_stack_top -= nargs;
+    if (raised_signal)
     {
-        func = func.as_object()->symbol()->function();
+        signal_args = result;
+        TAILCALL(shared_do_raise_signal);
+    }
+    else
+    {
+        vm.push_param(result);
+        ip += 5;
+    }
+    DISPATCH_NEXT;
+}
+
+TAILCALLABLE(funcall_with_rest_args)
+{
+    auto closure = Value(func).as_object()->closure();
+    auto function = closure->function();
+    {
+        auto rest = to_list(vm.m_locals+function->rest_index(),
+                            nargs - function->rest_index());
+        vm.m_locals[function->rest_index()] = rest;
     }
 
-    if (func.is_type(Object_Type::Closure))
+    vm.m_stack_top = vm.m_locals + function->num_locals();
+    ip = function->entrypoint(nargs);
+    DISPATCH_NEXT;
+}
+
+TAILCALLABLE(funcall_error)
+{
+    // error
+    GC_GUARD();
+    signal_args = gc.list(g.s_SIMPLE_ERROR, gc.alloc_string("Not a callable object"), Value(signal_args), Value(func));
+    GC_UNGUARD();
+    TAILCALL(shared_do_raise_signal);
+}
+
+TAILCALLABLE(shared_do_funcall)
+{
+    signal_args = func;
+    if (Value(func).is_type(Object_Type::Closure))
+        goto skip_lookup;
+
+    if (symbolp(Value(func)))
+    {
+        func = Value(func).as_object()->symbol()->function();
+    }
+
+    if (Value(func).is_type(Object_Type::Closure))
     {
         skip_lookup:
         // Although op_raise_signal also jumps here in a "funcall"-like way, it has
@@ -142,9 +186,9 @@ TAILCALLABLE(shared_do_funcall)
             vm.push_frame(ip+5, nargs);
         }
 
-        vm.m_current_closure = func;
-        auto closure = func.as_object()->closure();
-        auto function = closure->function();
+        vm.m_current_closure = Value(func);
+
+        auto function = Value(func).as_object()->closure()->function();
 
         // locals always start at first argument
         vm.m_locals = vm.m_stack_top - nargs;
@@ -156,68 +200,35 @@ TAILCALLABLE(shared_do_funcall)
             TAILCALL(funcall_too_few_args);
 
         if (function->has_rest() && nargs > function->rest_index())
-        {
-            auto rest = to_list(vm.m_locals+function->rest_index(),
-                                nargs - function->rest_index());
-            vm.m_locals[function->rest_index()] = rest;
-        }
+            TAILCALL(funcall_with_rest_args);
 
         vm.m_stack_top = vm.m_locals + function->num_locals();
-#if DEBUG > 1
-        {
-            assert(function->arity() <= function->num_locals());
-            auto start = vm.m_locals + function->arity();
-            auto end = vm.m_locals + function->num_locals();
-            for (; start != end; ++start)
-            {
-                *start = Value::nil();
-            }
-        }
-#endif
 
         ip = function->entrypoint(nargs);
         DISPATCH_NEXT;
     }
 
 
-    if (func.is_lisp_primitive())
+    if (Value(func).is_lisp_primitive())
     {
-        bool raised_signal = false;
-        auto primitive = func.as_lisp_primitive();
-        auto result = primitive(vm.m_stack_top - nargs, nargs, raised_signal);
-        vm.m_stack_top -= nargs;
-        if (raised_signal)
-        {
-            signal_args = result;
-            TAILCALL(shared_do_raise_signal);
-        }
-        else
-        {
-            vm.push_param(result);
-            ip += 1 + sizeof(nargs);
-        }
-        DISPATCH_NEXT;
+        TAILCALL(funcall_call_primitive);
     }
 
-    // error
-    GC_GUARD();
-    signal_args = gc.list(g.s_SIMPLE_ERROR, gc.alloc_string("Not a callable object"), ofunc, func);
-    GC_UNGUARD();
-    TAILCALL(shared_do_raise_signal);
+    [[clang::musttail]] return execute_funcall(ip, vm, Call_Type::Pushes_Frame, func, nargs, signal_args);
 }
 
 OPCODE(raise_signal)
 {
-        GC_GUARD();
-        // @Design, should we move the tag to be the first thing pushed since this just gets
-        // turned into a FUNCALL? The only reason to have the tag here is for easy access.
-        auto tag_ = vm.pop_param();
-        auto nargs_ = *reinterpret_cast<const uint32_t*>(ip+1);
-        signal_args = to_list(vm.m_stack_top - nargs_, nargs_);
-        signal_args = gc.cons(tag_, signal_args);
-        GC_UNGUARD();
+    // @Design, should we move the tag to be the first thing pushed since this just gets
+    // turned into a FUNCALL? The only reason to have the tag here is for easy access.
+    GC_GUARD();
+    auto tag_ = vm.pop_param();
+    auto nargs_ = *reinterpret_cast<const uint32_t*>(ip+1);
+    signal_args = to_list(vm.m_stack_top - nargs_, nargs_);
+    signal_args = gc.cons(tag_, Value(signal_args));
+    GC_UNGUARD();
 
-        TAILCALL(shared_do_raise_signal);
+    TAILCALL(shared_do_raise_signal);
 }
 
 TAILCALLABLE(shared_do_raise_signal)
@@ -225,40 +236,40 @@ TAILCALLABLE(shared_do_raise_signal)
     {
         VM_State::Handler_Case restore;
         VM_State::Signal_Handler handler;
-        if (vm.find_handler(first(signal_args), true, restore, handler))
+        if (vm.find_handler(first(Value(signal_args)), true, restore, handler))
         {
             vm.m_stack_top = restore.stack;
             vm.m_call_frame_top = restore.frame;
             // By default signal_args includes the handler tag and a specific handler knows its
             // own tag because it is labeled as such. In the case of a handler with the T tag it
             // is unknown so we leave it, otherwise it is removed.
-            auto ctx = vm.alloc_signal_context(signal_args, ip);
+            auto ctx = vm.alloc_signal_context(Value(signal_args), ip);
             if (handler.tag != g.s_T)
             {
-                signal_args = cdr(signal_args);
+                signal_args = cdr(Value(signal_args));
             }
             func = handler.handler;
             nargs = 1;
             vm.push_param(ctx);
-            while (!signal_args.is_nil())
+            while (!Value(signal_args).is_nil())
             {
                 ++nargs;
-                vm.push_param(car(signal_args));
-                signal_args = cdr(signal_args);
+                vm.push_param(car(Value(signal_args)));
+                signal_args = cdr(Value(signal_args));
             }
         }
         else
         {
             Signal_Context *ctx = nullptr;
-            if (first(signal_args).is_type(Object_Type::Signal_Context))
+            if (first(Value(signal_args)).is_type(Object_Type::Signal_Context))
             {
-                ctx = first(signal_args).as_object()->signal_context();
+                ctx = first(Value(signal_args)).as_object()->signal_context();
             }
             auto top = vm.m_call_frame_top;
             auto bottom = vm.m_call_frame_bottom;
             vm.m_call_frame_top = vm.m_call_frame_bottom;
             vm.m_stack_top = vm.m_stack_bottom;
-            throw VM_State::Signal_Exception(signal_args, ip, top, bottom, ctx);
+            throw VM_State::Signal_Exception(Value(signal_args), ip, top, bottom, ctx);
         }
     }
     [[clang::musttail]]return execute_shared_do_funcall(ip, vm, Call_Type::Doesnt_Push_Frame, func, nargs, signal_args);
@@ -300,73 +311,66 @@ OPCODE(jump)
 
 OPCODE(pop_jump_if_nil)
 {
-    auto jump_mask = ~(static_cast<uintptr_t>(vm.pop_param().is_nil()) - 1);
-    auto offset = *reinterpret_cast<const int32_t*>(ip+1);
-    ip += (offset & jump_mask) | (5 & ~jump_mask);
-    //if (vm.pop_param().is_nil())
-    //{
-    //    auto offset = *reinterpret_cast<const int32_t*>(ip+1);
-    //    ip += offset;
-    //}
-    //else
-    //{
-    //    ip += 5;
-    //}
+    //auto jump_mask = ~(static_cast<uintptr_t>(vm.pop_param().is_nil()) - 1);
+    //auto offset = *reinterpret_cast<const int32_t*>(ip+1);
+    //ip += (offset & jump_mask) | (5 & ~jump_mask);
+    if (vm.pop_param().is_nil())
+    {
+        nargs = *reinterpret_cast<const int32_t*>(ip+1);
+        ip += nargs;
+    }
+    else
+    {
+        ip += 5;
+    }
     DISPATCH_NEXT;
 }
 
 OPCODE(get_global)
 {
-    auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.push_param(g.global_value_slots[index]);
+    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.push_param(g.global_value_slots[nargs]);
     ip += 5;
     DISPATCH_NEXT;
 }
 
 OPCODE(set_global)
 {
-    auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-    g.global_value_slots[index] = vm.param_top();
+    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+    g.global_value_slots[nargs] = vm.param_top();
     ip += 5;
-    PREDICT(pop);
     DISPATCH_NEXT;
 }
 
 OPCODE(get_local)
 {
-    PREDICTED(get_local);
-    auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.push_param(vm.m_locals[index]);
+    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.push_param(vm.m_locals[nargs]);
     ip += 5;
-    PREDICT(push_value);
-    PREDICT(get_local);
     DISPATCH_NEXT;
 }
 
 OPCODE(set_local)
 {
-    PREDICTED(set_local)
-        auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.m_locals[index] = vm.param_top();
+    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.m_locals[nargs] = vm.param_top();
     ip += 5;
-    PREDICT(pop);
     DISPATCH_NEXT;
 }
 
 OPCODE(get_capture)
 {
-    auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.push_param(vm.m_current_closure.as_object()->closure()->get_capture(index));
+    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.push_param(vm.m_current_closure.as_object()->closure()->get_capture(nargs));
     ip += 5;
     DISPATCH_NEXT;
 }
 
 OPCODE(set_capture)
 {
-    auto index = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.m_current_closure.as_object()->closure()->set_capture(index, vm.param_top());
+    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.m_current_closure.as_object()->closure()->set_capture(nargs, vm.param_top());
     ip += 5;
-    PREDICT(pop);
     DISPATCH_NEXT;
 }
 
@@ -387,20 +391,16 @@ OPCODE(function_value)
 
 OPCODE(pop)
 {
-    PREDICTED(pop);
     vm.pop_param();
     ip += 1;
-    PREDICT(get_local);
     DISPATCH_NEXT;
 }
 
 OPCODE(push_value)
 {
-    PREDICTED(push_value);
     auto val = *reinterpret_cast<const Value*>(ip+1);
     vm.push_param(val);
     ip += 1 + sizeof(val);
-    PREDICT(funcall);
     DISPATCH_NEXT;
 }
 
@@ -645,6 +645,14 @@ OPCODE(debug_trap)
     DISPATCH_NEXT;
 }
 
+TAILCALLABLE(add_sub_type_error)
+{
+    GC_GUARD();
+    signal_args = gc.list(g.s_TYPE_ERROR, gc.list(g.s_OR, g.s_FIXNUM, g.s_FLOAT), Value(aux1), Value(aux2));
+    GC_UNGUARD();
+    TAILCALL(shared_do_raise_signal);
+}
+
 OPCODE(add)
 {
     /*
@@ -665,33 +673,30 @@ OPCODE(add)
     auto b = vm.pop_param();
     auto a = vm.pop_param();
 
-    char a_t = 0;
-    a_t += a.is_fixnum();
-    a_t += a.is_type(Object_Type::Float) * 4;
+    aux3 = 0;
+    aux3 += a.is_fixnum();
+    aux3 += a.is_type(Object_Type::Float) * 4;
 
-    char b_t = 0;
-    b_t += b.is_fixnum() * 2;
-    b_t += b.is_type(Object_Type::Float) * 8;
-
-    char c_t = a_t + b_t;
-
-    if (c_t == 3)
+    aux3 += b.is_fixnum() * 2;
+    aux3 += b.is_type(Object_Type::Float) * 8;
+    
+    if (aux3 == 3)
     {
         vm.push_param(a + b);
     }
-    else if (c_t == 6)
+    else if (aux3 == 6)
     {
         Float f = b.as_fixnum();
         f += a.as_object()->to_float();
         vm.push_param(gc.alloc_object<Float>(f));
     }
-    else if (c_t == 9)
+    else if (aux3 == 9)
     {
         Float f = a.as_fixnum();
         f += b.as_object()->to_float();
         vm.push_param(gc.alloc_object<Float>(f));
     }
-    else if (c_t == 12)
+    else if (aux3 == 12)
     {
         Float f = a.as_object()->to_float();
         f += b.as_object()->to_float();
@@ -699,10 +704,9 @@ OPCODE(add)
     }
     else
     {
-        GC_GUARD();
-        signal_args = gc.list(g.s_TYPE_ERROR, gc.list(g.s_OR, g.s_FIXNUM, g.s_FLOAT), a, b);
-        GC_UNGUARD();
-        TAILCALL(shared_do_raise_signal);
+        aux1 = a;
+        aux2 = b;
+        TAILCALL(add_sub_type_error);
     }
     ip += 1;
     DISPATCH_NEXT;
@@ -720,7 +724,6 @@ OPCODE(add_1)
         vm.push_param(gc.alloc_object<Float>(f + 1.0));
     }
     ip += 1;
-    PREDICT(set_local);
     DISPATCH_NEXT;
 }
 
@@ -778,10 +781,9 @@ OPCODE(sub)
     }
     else
     {
-        GC_GUARD();
-        signal_args = gc.list(g.s_TYPE_ERROR, gc.list(g.s_OR, g.s_FIXNUM, g.s_FLOAT), a, b);
-        GC_UNGUARD();
-        TAILCALL(shared_do_raise_signal);
+        aux1 = a;
+        aux2 = b;
+        TAILCALL(add_sub_type_error);
     }
     ip += 1;
     DISPATCH_NEXT;

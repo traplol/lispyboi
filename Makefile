@@ -1,5 +1,5 @@
 CC := clang++
-CFLAGS := -std=c++17 -Wall -Wno-unused-function
+CFLAGS := -std=c++17 -Wall -Wno-unused-function -foptimize-sibling-calls
 LDFLAGS := -ldl -fPIE 
 
 SOURCES:= $(wildcard src/*/*.cpp)
@@ -13,17 +13,17 @@ all: tailcalls_debug
 
 debug: debug1
 
-debug3: CFLAGS += -O0 -g3 -DDEBUG=3
+debug3: CFLAGS += -O0 -DDEBUG=3
 #debug3: CFLAGS += -fsanitize=address -fsanitize-recover=all
 debug3: _debug
 
-debug2: CFLAGS += -O0 -g3 -DDEBUG=2
+debug2: CFLAGS += -O0 -DDEBUG=2
 debug2: _debug
 
-debug1: CFLAGS += -O1 -g3 -DDEBUG=1
+debug1: CFLAGS += -O1 -DDEBUG=1
 debug1: _debug
 
-_debug: CFLAGS += -foptimize-sibling-calls
+_debug: CFLAGS += -g3
 _debug: lispyboi
 
 release: CFLAGS += -O3 -DDEBUG=0 -flto
