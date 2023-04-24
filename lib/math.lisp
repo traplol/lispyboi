@@ -38,6 +38,9 @@
 as the list (negative-p exponent mantissa)."
   (kernel::%float-components n))
 
+(defmacro zerop (n) `(kernel::%= ,n 0))
+(defun zerop (n) (zerop n))
+
 (export '(+most-positive-fixnum+
           +most-negative-fixnum+
           floor

@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <sstream>
 #include <fstream>
+#include <locale>
 
 #include "defines.hpp"
 #include "value.hpp"
@@ -997,6 +998,11 @@ DEFUN("%FLOOR", func_floor, g.kernel_str(), false)
     else
     {
         CHECK_NARGS_EXACTLY(2);
+        if (args[0].is_fixnum() && args[1].is_fixnum())
+        {
+            return Value::wrap_fixnum(args[0].as_fixnum() / args[1].as_fixnum());
+        }
+
         Float x, y;
         if (args[0].is_fixnum())
         {
@@ -3848,25 +3854,37 @@ int main(int argc, char **argv)
     }
 
 #if PROFILE_OPCODE_PAIRS
-    std::vector<std::pair<Opcode_Pair, int>> results;
-    for (auto &[k, v] : vm->opcode_pairs())
     {
-        results.push_back({k, v});
-    }
-    std::sort(results.begin(), results.end(), [](const std::pair<Opcode_Pair, int> &a,
-                                                 const std::pair<Opcode_Pair, int> &b) {
-                                                  return a.second > b.second;
-                                              });
-    int count = 30;
-    for (auto &[pair, times] : results)
-    {
-        std::cout << bytecode::opcode_name(static_cast<bytecode::Opcode>(pair.a)) << " : "
-                  << bytecode::opcode_name(static_cast<bytecode::Opcode>(pair.b)) << " -> "
-                  << times << "\n";
-        if (count-- == 0)
+        std::stringstream out;
+        out.imbue(std::locale(""));
+        uint64_t total = 0;
+        std::vector<std::pair<Opcode_Pair, int>> results;
+        for (auto &[k, v] : vm->opcode_pairs())
         {
-            break;
+            total += v;
+            results.push_back({k, v});
         }
+        std::sort(results.begin(), results.end(), [](const std::pair<Opcode_Pair, int> &a,
+                                                     const std::pair<Opcode_Pair, int> &b) {
+            return a.second > b.second;
+        });
+        int count = 30;
+        out << "Top " << count << " opcode pairs\n"
+            << "Total pairs executed: " << total << "\n"
+            << "======================================================\n";
+        for (auto &[pair, times] : results)
+        {
+            out << std::setw(15) << times
+                << "  / " << std::setw(6) << std::fixed << std::setprecision(2)<< (times*100.0) / total << "%  | "
+                << std::setw(15) << bytecode::opcode_name(static_cast<bytecode::Opcode>(pair.a)) << " : "
+                << bytecode::opcode_name(static_cast<bytecode::Opcode>(pair.b))
+                << "\n";
+            if (count-- == 0)
+            {
+                break;
+            }
+        }
+        std::cout << out.str();
     }
 #endif
 

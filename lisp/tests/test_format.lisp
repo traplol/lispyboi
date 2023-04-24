@@ -87,3 +87,5 @@
 
 (assert-string= "'(A B test 123)" (format nil "~a" ''(a b "test" 123)))
 (assert-string= "'(A B \"test\" 123)" (format nil "~s" ''(a b "test" 123)))
+
+(assert-string= "-3422861438051509793" (format nil "~s" (- 3422861438051509793)))
