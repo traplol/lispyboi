@@ -1,5 +1,3 @@
-#include <iomanip>
-
 #include "util.hpp"
 #include "bytecode/opcode.hpp"
 #include "bytecode/emitter.hpp"
@@ -10,8 +8,9 @@
 #define TYPE_CHECK(what, typecheck, expected)                           \
     do {                                                                \
         if (!(what).typecheck) {                                        \
-            signal_args = gc.list(g.s_TYPE_ERROR, (expected), (what));  \
-            TAILCALL(shared_do_raise_signal);                           \
+            aux1 = what;                                                \
+            aux2 = expected;                                            \
+            TAILCALL(type_check_failed);                                \
         }                                                               \
     } while (0)
 
@@ -23,21 +22,46 @@ enum Call_Type
     Pushes_Frame,
 };
 
-//#define OPCODE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (const uint8_t *ip, VM_State &vm, Value::Bits_Type call_type, Value::Bits_Type func, uint32_t nargs, Value::Bits_Type signal_args)
-#define OPCODE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (const uint8_t *ip, VM_State &vm, Value::Bits_Type aux1, Value::Bits_Type aux2, Value::Bits_Type aux3, Value::Bits_Type aux4)
-#define call_type aux1
-#define func aux2
-#define nargs aux3
-#define signal_args aux4
+/*
+ * The decision to use Value::Bits_Type aux1, aux2, aux3, and aux4 is an x64 optimization
+ * where the System V ABI calling convention requires the first 6 integer or pointer arguments
+ * to be passed via registers. And since C++ doesn't directly let use tell the compiler which
+ * variables to keep in registers we will just exploit the ABI requirements. :)
+ *
+ * This can create some hairy looking code where we try to minimize usage of locals and do
+ * everything with our 4 auxiliary registers but it can be a significant boost to performance
+ *
+ * A general rule of thumb to take advantage of this optimization is to hoist code that would
+ * allocate on the stack or instantiate things with non-trivial destructors, such as std::string
+ * or std::vector, into their own TAILCALLABLE function definition and TAILCALL there.
+ */
 
-#define DISPATCH_NEXT [[clang::musttail]]return execute_table[*ip](ip, vm, call_type, func, nargs, signal_args)
-#define TAILCALL(name) [[clang::musttail]]return execute_ ## name(ip, vm, call_type, func, nargs, signal_args)
-#define TAILCALLABLE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (const uint8_t *ip, VM_State &vm, Value::Bits_Type call_type, Value::Bits_Type func, Value::Bits_Type nargs, Value::Bits_Type signal_args)
+#define OPCODE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (void *execute_table, const uint8_t *ip, VM_State &vm, Value::Bits_Type aux1, Value::Bits_Type aux2, Value::Bits_Type aux3)
+using Exec_Function = const uint8_t *(*)(void*, const uint8_t*, VM_State&, Value::Bits_Type, Value::Bits_Type, Value::Bits_Type);
+//#define call_type aux1
+#define func aux1
+#define nargs aux2
+#define signal_args aux3
+
+#define DISPATCH_NEXT [[clang::musttail]]return reinterpret_cast<Exec_Function*>(execute_table)[*ip](execute_table, ip, vm, aux1, aux2, aux3)
+#define TAILCALL(name) [[clang::musttail]]return execute_ ## name(execute_table, ip, vm, aux1, aux2, aux3)
+//#define TAILCALLABLE(name) [[gnu::noinline]] static const uint8_t *execute_ ## name (void *execute_table, const uint8_t *ip, VM_State &vm, Value::Bits_Type aux1, Value::Bits_Type aux2, Value::Bits_Type aux3)
+#define TAILCALLABLE(name) OPCODE(name)
+
+#define PREDICT(name)                                                 \
+    do {                                                                \
+        if (static_cast<bytecode::Opcode>(*ip) == bytecode::Opcode::op_ ## name) \
+        {                                                               \
+            TAILCALL(name);                                             \
+        }                                                               \
+    } while (0)
+//#define PREDICT(name) // empty
 
 // Forward Declarations
 #define BYTECODE_DEF(name, noperands, nargs, size, docstring) OPCODE(name);
 #include "bytecode.def"
 
+template<bool pushes_frame>
 TAILCALLABLE(shared_do_funcall);
 TAILCALLABLE(shared_do_raise_signal);
 
@@ -46,6 +70,12 @@ constexpr std::array execute_table =
     {
         #include "bytecode.def"
     };
+
+TAILCALLABLE(type_check_failed)
+{
+    signal_args = gc.list(g.s_TYPE_ERROR, Value(aux2), Value(aux1));
+    TAILCALL(shared_do_raise_signal);
+}
 
 OPCODE(apply)
 {
@@ -68,14 +98,7 @@ OPCODE(apply)
         last_arg = cdr(last_arg);
         nargs++;
     }
-    [[clang::musttail]] return execute_shared_do_funcall(ip, vm, Call_Type::Pushes_Frame, func, nargs, signal_args);
-}
-
-OPCODE(funcall)
-{
-    func = vm.pop_param();
-    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-    [[clang::musttail]] return execute_shared_do_funcall(ip, vm, Call_Type::Pushes_Frame, func, nargs, signal_args);
+    [[clang::musttail]] return execute_shared_do_funcall<true>(execute_table, ip, vm, aux1, aux2, aux3);
 }
 
 OPCODE(gotocall)
@@ -90,7 +113,7 @@ OPCODE(gotocall)
     vm.m_stack_top = vm.m_locals;
     std::copy(begin, end, vm.m_stack_top);
     vm.m_stack_top += nargs;
-    [[clang::musttail]] return execute_shared_do_funcall(ip, vm, Call_Type::Doesnt_Push_Frame, func, nargs, signal_args);
+    [[clang::musttail]] return execute_shared_do_funcall<false>(execute_table, ip, vm, aux1, aux2, aux3);
 }
 
 TAILCALLABLE(funcall_too_few_args)
@@ -117,6 +140,16 @@ TAILCALLABLE(funcall_too_many_args)
                           Value(func),
                           Value::wrap_fixnum(function->arity()),
                           Value::wrap_fixnum(nargs));
+    GC_UNGUARD();
+    TAILCALL(shared_do_raise_signal);
+}
+
+TAILCALLABLE(funcall_not_callable_object)
+{
+    GC_GUARD();
+    signal_args = gc.list(g.s_SIMPLE_ERROR,
+                          gc.alloc_string("Not a callable object"),
+                          Value(signal_args));
     GC_UNGUARD();
     TAILCALL(shared_do_raise_signal);
 }
@@ -164,6 +197,14 @@ TAILCALLABLE(funcall_error)
     TAILCALL(shared_do_raise_signal);
 }
 
+OPCODE(funcall)
+{
+    func = vm.pop_param();
+    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+    [[clang::musttail]] return execute_shared_do_funcall<true>(execute_table, ip, vm, aux1, aux2, aux3);
+}
+
+template<bool pushes_frame>
 TAILCALLABLE(shared_do_funcall)
 {
     signal_args = func;
@@ -181,7 +222,7 @@ TAILCALLABLE(shared_do_funcall)
         // Although op_raise_signal also jumps here in a "funcall"-like way, it has
         // already setup the stack in the state the closure expects to execute under
         // so there is no need to push a frame for it here.
-        if (call_type == Call_Type::Pushes_Frame)
+        if constexpr (pushes_frame)
         {
             vm.push_frame(ip+5, nargs);
         }
@@ -193,14 +234,14 @@ TAILCALLABLE(shared_do_funcall)
         // locals always start at first argument
         vm.m_locals = vm.m_stack_top - nargs;
 
+        if (function->has_rest() && nargs > function->rest_index())
+            TAILCALL(funcall_with_rest_args);
+
         if (function->is_too_many_args(nargs))
             TAILCALL(funcall_too_many_args);
 
         if (function->is_too_few_args(nargs))
             TAILCALL(funcall_too_few_args);
-
-        if (function->has_rest() && nargs > function->rest_index())
-            TAILCALL(funcall_with_rest_args);
 
         vm.m_stack_top = vm.m_locals + function->num_locals();
 
@@ -214,66 +255,9 @@ TAILCALLABLE(shared_do_funcall)
         TAILCALL(funcall_call_primitive);
     }
 
-    [[clang::musttail]] return execute_funcall(ip, vm, Call_Type::Pushes_Frame, func, nargs, signal_args);
+    TAILCALL(funcall_not_callable_object);
 }
 
-OPCODE(raise_signal)
-{
-    // @Design, should we move the tag to be the first thing pushed since this just gets
-    // turned into a FUNCALL? The only reason to have the tag here is for easy access.
-    GC_GUARD();
-    auto tag_ = vm.pop_param();
-    auto nargs_ = *reinterpret_cast<const uint32_t*>(ip+1);
-    signal_args = to_list(vm.m_stack_top - nargs_, nargs_);
-    signal_args = gc.cons(tag_, Value(signal_args));
-    GC_UNGUARD();
-
-    TAILCALL(shared_do_raise_signal);
-}
-
-TAILCALLABLE(shared_do_raise_signal)
-{
-    {
-        VM_State::Handler_Case restore;
-        VM_State::Signal_Handler handler;
-        if (vm.find_handler(first(Value(signal_args)), true, restore, handler))
-        {
-            vm.m_stack_top = restore.stack;
-            vm.m_call_frame_top = restore.frame;
-            // By default signal_args includes the handler tag and a specific handler knows its
-            // own tag because it is labeled as such. In the case of a handler with the T tag it
-            // is unknown so we leave it, otherwise it is removed.
-            auto ctx = vm.alloc_signal_context(Value(signal_args), ip);
-            if (handler.tag != g.s_T)
-            {
-                signal_args = cdr(Value(signal_args));
-            }
-            func = handler.handler;
-            nargs = 1;
-            vm.push_param(ctx);
-            while (!Value(signal_args).is_nil())
-            {
-                ++nargs;
-                vm.push_param(car(Value(signal_args)));
-                signal_args = cdr(Value(signal_args));
-            }
-        }
-        else
-        {
-            Signal_Context *ctx = nullptr;
-            if (first(Value(signal_args)).is_type(Object_Type::Signal_Context))
-            {
-                ctx = first(Value(signal_args)).as_object()->signal_context();
-            }
-            auto top = vm.m_call_frame_top;
-            auto bottom = vm.m_call_frame_bottom;
-            vm.m_call_frame_top = vm.m_call_frame_bottom;
-            vm.m_stack_top = vm.m_stack_bottom;
-            throw VM_State::Signal_Exception(Value(signal_args), ip, top, bottom, ctx);
-        }
-    }
-    [[clang::musttail]]return execute_shared_do_funcall(ip, vm, Call_Type::Doesnt_Push_Frame, func, nargs, signal_args);
-}
 
 OPCODE(pop_handler_case)
 {
@@ -304,8 +288,8 @@ OPCODE(return)
 
 OPCODE(jump)
 {
-    auto offset = *reinterpret_cast<const int32_t*>(ip+1);
-    ip += offset;
+    aux1 = *reinterpret_cast<const int32_t*>(ip+1);
+    ip += aux1;
     DISPATCH_NEXT;
 }
 
@@ -316,8 +300,8 @@ OPCODE(pop_jump_if_nil)
     //ip += (offset & jump_mask) | (5 & ~jump_mask);
     if (vm.pop_param().is_nil())
     {
-        nargs = *reinterpret_cast<const int32_t*>(ip+1);
-        ip += nargs;
+        aux1 = *reinterpret_cast<const int32_t*>(ip+1);
+        ip += aux1;
     }
     else
     {
@@ -328,49 +312,53 @@ OPCODE(pop_jump_if_nil)
 
 OPCODE(get_global)
 {
-    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.push_param(g.global_value_slots[nargs]);
+    aux1 = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.push_param(g.global_value_slots[aux1]);
     ip += 5;
     DISPATCH_NEXT;
 }
 
 OPCODE(set_global)
 {
-    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-    g.global_value_slots[nargs] = vm.param_top();
+    aux1 = *reinterpret_cast<const uint32_t*>(ip+1);
+    g.global_value_slots[aux1] = vm.param_top();
     ip += 5;
+    //PREDICT(pop);
     DISPATCH_NEXT;
 }
 
 OPCODE(get_local)
 {
-    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.push_param(vm.m_locals[nargs]);
+    aux1 = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.push_param(vm.m_locals[aux1]);
     ip += 5;
+    PREDICT(get_local);
     DISPATCH_NEXT;
 }
 
 OPCODE(set_local)
 {
-    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.m_locals[nargs] = vm.param_top();
+    aux1 = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.m_locals[aux1] = vm.param_top();
     ip += 5;
+    //PREDICT(pop);
     DISPATCH_NEXT;
 }
 
 OPCODE(get_capture)
 {
-    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.push_param(vm.m_current_closure.as_object()->closure()->get_capture(nargs));
+    aux1 = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.push_param(vm.m_current_closure.as_object()->closure()->get_capture(aux1));
     ip += 5;
     DISPATCH_NEXT;
 }
 
 OPCODE(set_capture)
 {
-    nargs = *reinterpret_cast<const uint32_t*>(ip+1);
-    vm.m_current_closure.as_object()->closure()->set_capture(nargs, vm.param_top());
+    aux1 = *reinterpret_cast<const uint32_t*>(ip+1);
+    vm.m_current_closure.as_object()->closure()->set_capture(aux1, vm.param_top());
     ip += 5;
+    PREDICT(pop);
     DISPATCH_NEXT;
 }
 
@@ -401,6 +389,7 @@ OPCODE(push_value)
     auto val = *reinterpret_cast<const Value*>(ip+1);
     vm.push_param(val);
     ip += 1 + sizeof(val);
+    PREDICT(funcall);
     DISPATCH_NEXT;
 }
 
@@ -447,11 +436,6 @@ OPCODE(instantiate_closure)
             {
                 ref = vm.m_current_closure.as_object()->closure()->get_reference(offs.index);
             }
-            //printf("[%s] %d %p %s\n",
-            //       offs.name.c_str(),
-            //       offs.index,
-            //       ref->location(),
-            //       (ref->location() ? repr(ref->value()).c_str() : "#<nullptr>"));
             closure->capture_reference(i, ref);
         }
     }
@@ -484,15 +468,15 @@ OPCODE(cons)
 
 OPCODE(car)
 {
-    auto o = vm.pop_param();
-    if (o.is_nil())
+    if (vm.param_top().is_nil())
     {
-        vm.push_param(o);
+        // nothing
     }
     else
     {
-        CHECK_CONS(o);
-        vm.push_param(car(o));
+        aux2 = vm.pop_param();
+        CHECK_CONS(Value(aux2));
+        vm.push_param(car(Value(aux2)));
     }
     ip += 1;
     DISPATCH_NEXT;
@@ -500,15 +484,15 @@ OPCODE(car)
 
 OPCODE(cdr)
 {
-    auto o = vm.pop_param();
-    if (o.is_nil())
+    if (vm.param_top().is_nil())
     {
-        vm.push_param(o);
+        // nothing
     }
     else
     {
-        CHECK_CONS(o);
-        vm.push_param(cdr(o));
+        aux2 = vm.pop_param();
+        CHECK_CONS(Value(aux2));
+        vm.push_param(cdr(Value(aux2)));
     }
     ip += 1;
     DISPATCH_NEXT;
@@ -540,22 +524,24 @@ OPCODE(push_handler_case)
 
 OPCODE(eq)
 {
-    auto b = vm.pop_param();
-    auto a = vm.pop_param();
-    if (a == b)
+    aux2 = vm.pop_param();
+    aux1 = vm.pop_param();
+    if (aux1 == aux2)
     {
         vm.push_param(g.s_T);
+        ip += 1;
+        DISPATCH_NEXT;
     }
-    else if (a.is_type(Object_Type::System_Pointer) &&
-             b.is_type(Object_Type::System_Pointer) &&
-             (a.as_object()->system_pointer() == b.as_object()->system_pointer()))
+    if (Value(aux1).is_type(Object_Type::System_Pointer) &&
+        Value(aux2).is_type(Object_Type::System_Pointer) &&
+        Value(aux1).as_object()->system_pointer() ==
+        Value(aux2).as_object()->system_pointer())
     {
         vm.push_param(g.s_T);
+        ip += 1;
+        DISPATCH_NEXT;
     }
-    else
-    {
-        vm.push_param(Value::nil());
-    }
+    vm.push_param(Value::nil());
     ip += 1;
     DISPATCH_NEXT;
 }
@@ -630,27 +616,43 @@ OPCODE(aset)
     DISPATCH_NEXT;
 }
 
-OPCODE(debug_trap)
-{
-    //g.debugger.breaking = !param_top().is_nil();
-    //if (g.debugger.breaking)
-    //{
-    //    g.debugger.command = Runtime_Globals::Debugger::Command::Step_Into;
-    //}
-    //else
-    //{
-    //    g.debugger.command = Runtime_Globals::Debugger::Command::Continue;
-    //}
-    ip += 1;
-    DISPATCH_NEXT;
-}
-
 TAILCALLABLE(add_sub_type_error)
 {
     GC_GUARD();
     signal_args = gc.list(g.s_TYPE_ERROR, gc.list(g.s_OR, g.s_FIXNUM, g.s_FLOAT), Value(aux1), Value(aux2));
     GC_UNGUARD();
     TAILCALL(shared_do_raise_signal);
+}
+
+TAILCALLABLE(add1_sub1_type_error)
+{
+    GC_GUARD();
+    signal_args = gc.list(g.s_TYPE_ERROR, gc.list(g.s_OR, g.s_FIXNUM, g.s_FLOAT), vm.param_top());
+    GC_UNGUARD();
+    TAILCALL(shared_do_raise_signal);
+}
+
+TAILCALLABLE(add_with_floats)
+{
+    // aux3 is already setup
+    Float f;
+    if (aux3 == 6)
+    {
+        f = Value(aux2).as_fixnum();
+        f += Value(aux1).as_object()->to_float();
+    }
+    else if (aux3 == 9)
+    {
+        f = Value(aux1).as_fixnum();
+        f += Value(aux2).as_object()->to_float();
+    }
+    else //if (aux3 == 12)
+    {
+        f = Value(aux1).as_object()->to_float();
+        f += Value(aux2).as_object()->to_float();
+    }
+    vm.push_param(gc.alloc_object<Float>(f));
+    DISPATCH_NEXT;
 }
 
 OPCODE(add)
@@ -670,46 +672,45 @@ OPCODE(add)
       no, int = 2
       no, flo = 8
     */
-    auto b = vm.pop_param();
-    auto a = vm.pop_param();
+    ip += 1;
+    aux1 = vm.pop_param();
+    aux2 = vm.pop_param();
 
     aux3 = 0;
-    aux3 += a.is_fixnum();
-    aux3 += a.is_type(Object_Type::Float) * 4;
-
-    aux3 += b.is_fixnum() * 2;
-    aux3 += b.is_type(Object_Type::Float) * 8;
-    
+    aux3 += Value(aux1).is_fixnum();
+    aux3 += Value(aux2).is_fixnum() * 2;
     if (aux3 == 3)
     {
-        vm.push_param(a + b);
+        vm.push_param(Value(aux1) + Value(aux2));
+        DISPATCH_NEXT;
     }
-    else if (aux3 == 6)
+
+    aux3 += Value(aux1).is_type(Object_Type::Float) * 4;
+    aux3 += Value(aux2).is_type(Object_Type::Float) * 8;
+
+    if (aux3 == 6)
     {
-        Float f = b.as_fixnum();
-        f += a.as_object()->to_float();
-        vm.push_param(gc.alloc_object<Float>(f));
+        TAILCALL(add_with_floats);
     }
-    else if (aux3 == 9)
+    if (aux3 == 9)
     {
-        Float f = a.as_fixnum();
-        f += b.as_object()->to_float();
-        vm.push_param(gc.alloc_object<Float>(f));
+        TAILCALL(add_with_floats);
     }
-    else if (aux3 == 12)
+    if (aux3 == 12)
     {
-        Float f = a.as_object()->to_float();
-        f += b.as_object()->to_float();
-        vm.push_param(gc.alloc_object<Float>(f));
+        TAILCALL(add_with_floats);
     }
-    else
-    {
-        aux1 = a;
-        aux2 = b;
-        TAILCALL(add_sub_type_error);
-    }
+    ip -= 1; // Need to backup for the error reporting.
+    TAILCALL(add_sub_type_error);
+}
+
+TAILCALLABLE(add_1_float)
+{
+    Float f = vm.pop_param().as_object()->to_float();
+    vm.push_param(gc.alloc_object<Float>(f + 1.0));
     ip += 1;
     DISPATCH_NEXT;
+    PREDICT(set_local);
 }
 
 OPCODE(add_1)
@@ -717,13 +718,40 @@ OPCODE(add_1)
     if (vm.param_top().is_fixnum())
     {
         vm.param_top() += Value::wrap_fixnum(1);
+        ip += 1;
+        PREDICT(set_local);
+        DISPATCH_NEXT;
     }
     else if (vm.param_top().is_type(Object_Type::Float))
     {
-        Float f = vm.pop_param().as_object()->to_float();
-        vm.push_param(gc.alloc_object<Float>(f + 1.0));
+        TAILCALL(add_1_float);
     }
-    ip += 1;
+    else
+    {
+        TAILCALL(add1_sub1_type_error);
+    }
+}
+
+TAILCALLABLE(sub_with_floats)
+{
+    // aux3 is already setup
+    Float f;
+    if (aux3 == 6)
+    {
+        f = Value(aux2).as_fixnum();
+        f -= Value(aux1).as_object()->to_float();
+    }
+    else if (aux3 == 9)
+    {
+        f = Value(aux1).as_fixnum();
+        f -= Value(aux2).as_object()->to_float();
+    }
+    else //if (aux3 == 12)
+    {
+        f = Value(aux1).as_object()->to_float();
+        f -= Value(aux2).as_object()->to_float();
+    }
+    vm.push_param(gc.alloc_object<Float>(f));
     DISPATCH_NEXT;
 }
 
@@ -744,47 +772,46 @@ OPCODE(sub)
       no, int = 2
       no, flo = 8
     */
-    auto b = vm.pop_param();
-    auto a = vm.pop_param();
+    ip += 1;
+    aux2 = vm.pop_param();
+    aux1 = vm.pop_param();
 
-    char a_t = 0;
-    a_t += a.is_fixnum();
-    a_t += a.is_type(Object_Type::Float) * 4;
+    aux3 = 0;
+    aux3 += Value(aux1).is_fixnum();
+    aux3 += Value(aux2).is_fixnum() * 2;
+    // int, int
+    if (aux3 == 3)
+    {
+        vm.push_param(Value(aux1) - Value(aux2));
+        DISPATCH_NEXT;
+    }
 
-    char b_t = 0;
-    b_t += b.is_fixnum() * 2;
-    b_t += b.is_type(Object_Type::Float) * 8;
+    aux3 += Value(aux1).is_type(Object_Type::Float) * 4;
+    aux3 += Value(aux2).is_type(Object_Type::Float) * 8;
 
-    char c_t = a_t + b_t;
+    // float, int
+    if (aux3 == 6)
+    {
+        TAILCALL(sub_with_floats);
+    }
+    // int, float
+    if (aux3 == 9)
+    {
+        TAILCALL(sub_with_floats);
+    }
+    // float, float
+    if (aux3 == 12)
+    {
+        TAILCALL(sub_with_floats);
+    }
+    ip -= 1; // Need to backup for the error reporting.
+    TAILCALL(add_sub_type_error);
+}
 
-    if (c_t == 3)
-    {
-        vm.push_param(a - b);
-    }
-    else if (c_t == 6)
-    {
-        Float f = b.as_fixnum();
-        f -= a.as_object()->to_float();
-        vm.push_param(gc.alloc_object<Float>(f));
-    }
-    else if (c_t == 9)
-    {
-        Float f = a.as_fixnum();
-        f -= b.as_object()->to_float();
-        vm.push_param(gc.alloc_object<Float>(f));
-    }
-    else if (c_t == 12)
-    {
-        Float f = a.as_object()->to_float();
-        f -= b.as_object()->to_float();
-        vm.push_param(gc.alloc_object<Float>(f));
-    }
-    else
-    {
-        aux1 = a;
-        aux2 = b;
-        TAILCALL(add_sub_type_error);
-    }
+TAILCALLABLE(sub1_float)
+{
+    Float f = vm.pop_param().as_object()->to_float();
+    vm.push_param(gc.alloc_object<Float>(f - 1.0));
     ip += 1;
     DISPATCH_NEXT;
 }
@@ -794,61 +821,93 @@ OPCODE(sub_1)
     if (vm.param_top().is_fixnum())
     {
         vm.param_top() -= Value::wrap_fixnum(1);
+        ip += 1;
+        DISPATCH_NEXT;
     }
     else if (vm.param_top().is_type(Object_Type::Float))
     {
-        Float f = vm.pop_param().as_object()->to_float();
-        vm.push_param(gc.alloc_object<Float>(f - 1.0));
+        TAILCALL(sub1_float);
     }
+    else
+    {
+        TAILCALL(add1_sub1_type_error);
+    }
+}
+
+OPCODE(raise_signal)
+{
+    // @Design, should we move the tag to be the first thing pushed since this just gets
+    // turned into a FUNCALL? The only reason to have the tag here is for easy access.
+    GC_GUARD();
+    auto tag_ = vm.pop_param();
+    auto nargs_ = *reinterpret_cast<const uint32_t*>(ip+1);
+    signal_args = to_list(vm.m_stack_top - nargs_, nargs_);
+    signal_args = gc.cons(tag_, Value(signal_args));
+    GC_UNGUARD();
+
+    TAILCALL(shared_do_raise_signal);
+}
+
+TAILCALLABLE(shared_do_raise_signal)
+{
+    {
+        VM_State::Handler_Case restore;
+        VM_State::Signal_Handler handler;
+        if (vm.find_handler(first(Value(signal_args)), true, restore, handler))
+        {
+            vm.m_stack_top = restore.stack;
+            vm.m_call_frame_top = restore.frame;
+            // By default signal_args includes the handler tag and a specific handler knows its
+            // own tag because it is labeled as such. In the case of a handler with the T tag it
+            // is unknown so we leave it, otherwise it is removed.
+            auto ctx = vm.alloc_signal_context(Value(signal_args), ip);
+            if (handler.tag != g.s_T)
+            {
+                signal_args = cdr(Value(signal_args));
+            }
+            func = handler.handler;
+            nargs = 1;
+            vm.push_param(ctx);
+            while (!Value(signal_args).is_nil())
+            {
+                ++nargs;
+                vm.push_param(car(Value(signal_args)));
+                signal_args = cdr(Value(signal_args));
+            }
+        }
+        else
+        {
+            Signal_Context *ctx = nullptr;
+            if (first(Value(signal_args)).is_type(Object_Type::Signal_Context))
+            {
+                ctx = first(Value(signal_args)).as_object()->signal_context();
+            }
+            auto top = vm.m_call_frame_top;
+            auto bottom = vm.m_call_frame_bottom;
+            vm.m_call_frame_top = vm.m_call_frame_bottom;
+            vm.m_stack_top = vm.m_stack_bottom;
+            throw VM_State::Signal_Exception(Value(signal_args), ip, top, bottom, ctx);
+        }
+    }
+    [[clang::musttail]]return execute_shared_do_funcall<false>(execute_table, ip, vm, aux1, aux2, aux3);
+}
+
+OPCODE(debug_trap)
+{
+    //g.debugger.breaking = !param_top().is_nil();
+    //if (g.debugger.breaking)
+    //{
+    //    g.debugger.command = Runtime_Globals::Debugger::Command::Step_Into;
+    //}
+    //else
+    //{
+    //    g.debugger.command = Runtime_Globals::Debugger::Command::Continue;
+    //}
     ip += 1;
     DISPATCH_NEXT;
 }
 
 const uint8_t *VM_State::execute_impl_tailcalls(const uint8_t *ip)
 {
-    return execute_table[*ip](ip, *this, Call_Type::Doesnt_Push_Frame, Value::nil(), 0, Value::nil());
+    return execute_table[*ip]((void*)execute_table.data(), ip, *this, 0, 0, 0);
 }
-
-
-//#define BYTECODE_DEF(name, noperands, nargs, size, docstring) &&opcode_ ## name,
-//    void *computed_gotos[256] =
-//    {
-//        #include "bytecode.def"
-//    };
-//
-//#define DISPATCH(name) case bytecode::Opcode::op_ ## name: opcode_ ## name:
-//
-//#define DISPATCH_NEXT goto *computed_gotos[*ip];
-//#define EXEC switch(static_cast<bytecode::Opcode>(*ip))
-//#define DISPATCH_LOOP for (;;)
-//
-//#if PROFILE_OPCODE_PAIRS
-//#define PREDICTED(name) //empty
-//#define PREDICT(name) //empty
-//#else
-//#define PREDICTED(name) predicted_ ## name:
-//#define PREDICT(name)                                                 \
-//    do {                                                                \
-//        if (static_cast<bytecode::Opcode>(*ip) == bytecode::Opcode::op_ ## name) \
-//        {                                                               \
-//            goto predicted_ ## name;                                       \
-//        }                                                               \
-//    } while (0)
-//#endif
-//
-//    static_assert(sizeof(*ip) == 1, "pointer arithmetic will not work as expected.");
-//    Value signal_args;
-//    Value func;
-//    uint32_t nargs;
-//    enum class Call_Type
-//    {
-//        Doesnt_Push_Frame,
-//        Pushes_Frame,
-//    } call_type;
-//    DISPATCH_LOOP
-//    {
-//        EXEC
-//        {
-//        }
-//    }
-//    done:
