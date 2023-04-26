@@ -15,29 +15,12 @@ enum class Opcode : uint8_t
 #undef BYTECODE_DEF
 };
 
-static
-std::string opcode_name(Opcode opcode)
-{
-    switch (opcode)
-    {
-#define BYTECODE_DEF(name, noperands, nargs, size, docstring) case Opcode::op_ ## name: return #name;
-#include "../bytecode.def"
-#undef BYTECODE_DEF
-    }
-    return "???";
-}
+std::string opcode_name(Opcode opcode);
+size_t opcode_noperands(Opcode opcode);
+size_t opcode_nargs(Opcode opcode);
+size_t opcode_size(Opcode opcode);
+std::string opcode_docstring(Opcode opcode);
 
-static
-size_t opcode_size(Opcode opcode)
-{
-    switch (opcode)
-    {
-#define BYTECODE_DEF(name, noperands, nargs, size, docstring) case Opcode::op_ ## name: return size;
-#include "../bytecode.def"
-#undef BYTECODE_DEF
-    }
-    return 1;
-}
 }
 }
 

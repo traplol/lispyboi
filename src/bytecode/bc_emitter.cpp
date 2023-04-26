@@ -6,12 +6,12 @@
 #include "../util.hpp"
 #include "opcode.hpp"
 #include "compiler.hpp"
-#include "emitter.hpp"
+#include "bc_emitter.hpp"
 
 using namespace lisp;
 using namespace lisp::bytecode;
 
-void Emitter::emit_push_literal(Value value)
+void BC_Emitter::emit_push_value(Value value)
 {
     if (value.is_garbage_collected())
     {
@@ -37,284 +37,245 @@ void Emitter::emit_push_literal(Value value)
     }
 }
 
-void Emitter::emit_push_nil()
+void BC_Emitter::emit_push_nil()
 {
     append(Opcode::op_push_nil);
 }
 
-void Emitter::emit_push_fixnum_0()
+void BC_Emitter::emit_push_fixnum_0()
 {
     append(Opcode::op_push_fixnum_0);
 }
 
-void Emitter::emit_push_fixnum_1()
+void BC_Emitter::emit_push_fixnum_1()
 {
     append(Opcode::op_push_fixnum_1);
 }
 
-void Emitter::emit_funcall(uint32_t argc)
+void BC_Emitter::emit_funcall(uint32_t argc)
 {
     append(Opcode::op_funcall);
     append(argc);
 }
 
-void Emitter::emit_gotocall(uint32_t argc)
+void BC_Emitter::emit_gotocall(uint32_t argc)
 {
     append(Opcode::op_gotocall);
     append(argc);
 }
 
-void Emitter::emit_apply(uint32_t argc)
+void BC_Emitter::emit_apply(uint32_t argc)
 {
     append(Opcode::op_apply);
     append(argc);
 }
 
-void Emitter::emit_return()
+void BC_Emitter::emit_return()
 {
     append(Opcode::op_return);
 }
 
-int32_t Emitter::emit_jump()
+void *BC_Emitter::emit_jump(void *destination)
 {
     append(Opcode::op_jump);
     auto offset = position();
-    append<uint32_t>(0xDEADBEEF);
-    return offset;
+    append<int32_t>(reinterpret_cast<intptr_t>(destination));
+    return reinterpret_cast<void*>(offset);
 }
-int32_t Emitter::emit_pop_jump_if_nil()
+
+void *BC_Emitter::emit_jump()
+{
+    return emit_jump(reinterpret_cast<void*>(0xDEADBEEF));
+}
+
+void *BC_Emitter::emit_pop_jump_if_nil(void *destination)
 {
     append(Opcode::op_pop_jump_if_nil);
     auto offset = position();
-    append<uint32_t>(0xDEADBEEF);
-    return offset;
+    append<int32_t>(reinterpret_cast<intptr_t>(destination));
+    return reinterpret_cast<void*>(offset);
 }
 
-void Emitter::emit_get_value(Symbol *symbol)
+void *BC_Emitter::emit_pop_jump_if_nil()
 {
-    uint32_t idx = ~0u;
-    Opcode opcode;
+    return emit_pop_jump_if_nil(reinterpret_cast<void*>(0xDEADBEEF));
+}
 
-    if (m_scope->resolve_local(symbol, idx))
-    {
-        if (m_scope->is_root())
-        {
-            opcode = Opcode::op_get_global;
-        }
-        else
-        {
-            opcode = Opcode::op_get_local;
-        }
-    }
-    else if (m_scope->resolve_capture(symbol, idx))
-    {
-        opcode = Opcode::op_get_capture;
-    }
-    else if (m_scope->get_root()->resolve_local(symbol, idx))
-    {
-        opcode = Opcode::op_get_global;
-    }
-    else
-    {
-        GC_GUARD();
-        auto signal_args = gc.list(g.s_SIMPLE_ERROR,
-                                   gc.alloc_string("Undefined symbol"),
-                                   gc.alloc_string(symbol->qualified_name()));
-        GC_UNGUARD();
-        throw VM_State::Signal_Exception(signal_args);
-    }
+void BC_Emitter::resolve_jump(void *branch_id, void *destination)
+{
+    auto br = reinterpret_cast<intptr_t>(branch_id);
+    auto dest = reinterpret_cast<intptr_t>(destination);
+    set_raw<int32_t>(br, dest - (br - 1));
+}
 
-    assert(idx != ~0u);
+void BC_Emitter::resolve_jump_to_current(void *branch_id)
+{
+    resolve_jump(branch_id, reinterpret_cast<void*>(position()));
+}
 
-    append(opcode);
+void BC_Emitter::emit_get_global(uint32_t idx)
+{
+    append(Opcode::op_get_global);
     append(idx);
 }
 
-void Emitter::emit_get_value(Value value)
+void BC_Emitter::emit_get_local(uint32_t idx)
 {
-    if (!symbolp(value))
-    {
-        fprintf(stderr, "Cannot get_value non-symbol value: %s\n", repr(value).c_str());
-        abort();
-    }
-    else if (value == g.s_T || value.as_object()->symbol()->is_keyword())
-    {
-        emit_push_literal(value);
-    }
-    else
-    {
-        emit_get_value(value.as_object()->symbol());
-    }
-}
-
-void Emitter::emit_set_value(Symbol *symbol)
-{
-    uint32_t idx = ~0u;
-    Opcode opcode;
-
-    if (m_scope->resolve_local(symbol, idx))
-    {
-        if (m_scope->is_root())
-        {
-            opcode = Opcode::op_set_global;
-        }
-        else
-        {
-            opcode = Opcode::op_set_local;
-        }
-    }
-    else if (m_scope->resolve_capture(symbol, idx))
-    {
-        opcode = Opcode::op_set_capture;
-    }
-    else
-    {
-        opcode = Opcode::op_set_global;
-        auto root = m_scope->get_root();
-        if (!root->resolve_local(symbol, idx))
-        {
-            root->create_variable(symbol, &idx);
-        }
-    }
-
-    assert(idx != ~0u);
-
-    append(opcode);
+    append(Opcode::op_get_local);
     append(idx);
 }
 
-void Emitter::emit_set_value(Value value)
+void BC_Emitter::emit_get_capture(uint32_t idx)
 {
-    if (!symbolp(value))
-    {
-        fprintf(stderr, "Cannot set_value non-symbol value: %s\n", repr(value).c_str());
-        abort();
-    }
-    else
-    {
-        emit_set_value(value.as_object()->symbol());
-    }
+    append(Opcode::op_get_capture);
+    append(idx);
 }
 
-void Emitter::emit_function_value(Value func_val)
+void BC_Emitter::emit_set_global(uint32_t idx)
+{
+    append(Opcode::op_set_global);
+    append(idx);
+}
+
+void BC_Emitter::emit_set_local(uint32_t idx)
+{
+    append(Opcode::op_set_local);
+    append(idx);
+}
+
+void BC_Emitter::emit_set_capture(uint32_t idx)
+{
+    append(Opcode::op_set_capture);
+    append(idx);
+}
+
+void BC_Emitter::emit_function_value(Value func_val)
 {
     append(Opcode::op_function_value);
     append(func_val);
 }
 
-void Emitter::emit_instantiate_closure(const Function *function)
+void BC_Emitter::emit_instantiate_closure(const Function *function)
 {
     append(Opcode::op_instantiate_closure);
     append(function);
 }
 
-void Emitter::emit_close_values(uint32_t num_values)
+void BC_Emitter::emit_close_values(uint32_t num_values)
 {
     append(Opcode::op_close_values);
     append(num_values);
 }
 
-void Emitter::emit_pop()
+void BC_Emitter::emit_pop()
 {
     append(Opcode::op_pop);
 }
 
-void Emitter::emit_halt()
+void BC_Emitter::emit_halt()
 {
     append(Opcode::op_halt);
 }
 
-int32_t Emitter::emit_push_handler_case(uint32_t num_handlers)
+void *BC_Emitter::emit_push_handler_case(uint32_t num_handlers)
 {
     append(Opcode::op_push_handler_case);
     append(num_handlers);
     auto offset = position();
-    append<uint32_t>(0xDEADBEEF);
-    return offset;
+    append<int32_t>(0xDEADBEEF);
+    return reinterpret_cast<void*>(offset);
 }
 
-void Emitter::emit_pop_handler_case()
+void BC_Emitter::close_push_handler_case(void *handler_id)
+{
+    auto id = reinterpret_cast<intptr_t>(handler_id);
+    auto dest = position() - id;
+    dest += (sizeof(uint32_t) + 1);
+    set_raw<int32_t>(id, dest);
+}
+
+void BC_Emitter::emit_pop_handler_case()
 {
     append(Opcode::op_pop_handler_case);
 }
 
-void Emitter::emit_raise_signal(uint32_t argc)
+void BC_Emitter::emit_raise_signal(uint32_t argc)
 {
     append(Opcode::op_raise_signal);
     append(argc);
 }
 
-void Emitter::emit_cons()
+void BC_Emitter::emit_cons()
 {
     append(Opcode::op_cons);
 }
 
-void Emitter::emit_car()
+void BC_Emitter::emit_car()
 {
     append(Opcode::op_car);
 }
 
-void Emitter::emit_cdr()
+void BC_Emitter::emit_cdr()
 {
     append(Opcode::op_cdr);
 }
 
-void Emitter::emit_eq()
+void BC_Emitter::emit_eq()
 {
     append(Opcode::op_eq);
 }
 
-void Emitter::emit_rplaca()
+void BC_Emitter::emit_rplaca()
 {
     append(Opcode::op_rplaca);
 }
 
-void Emitter::emit_rplacd()
+void BC_Emitter::emit_rplacd()
 {
     append(Opcode::op_rplacd);
 }
 
-void Emitter::emit_aref()
+void BC_Emitter::emit_aref()
 {
     append(Opcode::op_aref);
 }
 
-void Emitter::emit_aset()
+void BC_Emitter::emit_aset()
 {
     append(Opcode::op_aset);
 }
 
-void Emitter::emit_add()
+void BC_Emitter::emit_add()
 {
     append(Opcode::op_add);
 }
 
-void Emitter::emit_add_1()
+void BC_Emitter::emit_add_1()
 {
     append(Opcode::op_add_1);
 }
 
-void Emitter::emit_sub()
+void BC_Emitter::emit_sub()
 {
     append(Opcode::op_sub);
 }
 
-void Emitter::emit_sub_1()
+void BC_Emitter::emit_sub_1()
 {
     append(Opcode::op_sub_1);
 }
 
-void Emitter::emit_debug_trap()
+void BC_Emitter::emit_debug_trap()
 {
     append(Opcode::op_debug_trap);
 }
 
-int32_t Emitter::position() const
+int32_t BC_Emitter::position() const
 {
     return m_bytecode.size();
 }
 
-void Emitter::lock()
+void BC_Emitter::lock()
 {
     if (m_locked)
     {
@@ -331,27 +292,27 @@ void Emitter::lock()
     m_locked = true;
 }
 
-void Emitter::map_range_to(size_t begin, size_t end, Value expr)
+void BC_Emitter::map_range_to(size_t begin, size_t end, Value expr)
 {
     m_debug_map.push_back({begin, end, expr});
 }
 
-const std::vector<uint8_t> &Emitter::bytecode() const
+const std::vector<uint8_t> &BC_Emitter::bytecode() const
 {
     return m_bytecode;
 }
 
-std::vector<uint8_t> &&Emitter::move_bytecode()
+std::vector<uint8_t> &&BC_Emitter::move_bytecode()
 {
     return std::move(m_bytecode);
 }
 
-void Emitter::push_labels()
+void BC_Emitter::push_labels()
 {
     m_label_stack.push_back(Label_Map());
 }
 
-void Emitter::pop_labels()
+void BC_Emitter::pop_labels()
 {
     assert(m_label_stack.size() != 0);
 
@@ -390,7 +351,7 @@ void Emitter::pop_labels()
     }
 }
 
-bool Emitter::get_label(Value tag, int32_t &out_offset)
+bool BC_Emitter::get_label(Value tag, int32_t &out_offset)
 {
     for (auto it = m_label_stack.rbegin(); it != m_label_stack.rend(); ++it)
     {
@@ -404,7 +365,7 @@ bool Emitter::get_label(Value tag, int32_t &out_offset)
     return false;
 }
 
-int32_t Emitter::make_label(Value tag)
+void *BC_Emitter::user_label(Value tag)
 {
     assert(m_label_stack.size() != 0);
     if (m_label_stack.back().find(tag) != m_label_stack.back().end())
@@ -418,16 +379,17 @@ int32_t Emitter::make_label(Value tag)
     }
     auto pos = position();
     m_label_stack.back()[tag] = pos;
-    return pos;
+    return reinterpret_cast<void*>(pos);
 }
 
-void Emitter::backfill_label(int32_t offset, Value tag)
+void BC_Emitter::backfill_label(void *branch_id, Value tag)
 {
+    auto offset = reinterpret_cast<intptr_t>(branch_id);
     assert(m_label_stack.size() != 0);
-    m_backfills.push_back({tag, offset});
+    m_backfills.push_back({tag, static_cast<int32_t>(offset)});
 }
 
-compiler::Scope *Emitter::scope() const
+void *BC_Emitter::internal_label()
 {
-    return m_scope;
+    return reinterpret_cast<void*>(position());
 }

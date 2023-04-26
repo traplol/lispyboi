@@ -10,6 +10,7 @@
 #include "../vm_state.hpp"
 #include "compiler.hpp"
 #include "emitter.hpp"
+#include "bc_emitter.hpp"
 
 namespace lisp
 {
@@ -60,28 +61,137 @@ bool effect_free(Value expr)
 }
 
 static
-void compile_body(bytecode::Emitter &e, Value body, bool tail_position)
+void compile_get_value(bytecode::Emitter &e, Scope *scope, Symbol *symbol)
+{
+    uint32_t idx = ~0u;
+
+    assert(symbol);
+
+    if (scope->resolve_local(symbol, idx))
+    {
+        if (scope->is_root())
+        {
+            assert(idx != ~0u);
+            e.emit_get_global(idx);
+        }
+        else
+        {
+            assert(idx != ~0u);
+            e.emit_get_local(idx);
+        }
+    }
+    else if (scope->resolve_capture(symbol, idx))
+    {
+        assert(idx != ~0u);
+        e.emit_get_capture(idx);
+    }
+    else if (scope->get_root()->resolve_local(symbol, idx))
+    {
+        assert(idx != ~0u);
+        e.emit_get_global(idx);
+    }
+    else
+    {
+        GC_GUARD();
+        auto signal_args = gc.list(g.s_SIMPLE_ERROR,
+                                   gc.alloc_string("Undefined symbol"),
+                                   gc.alloc_string(symbol->qualified_name()));
+        GC_UNGUARD();
+        throw VM_State::Signal_Exception(signal_args);
+    }
+}
+
+static
+void compile_get_value(bytecode::Emitter &e, Scope *scope, Value value)
+{
+    if (!symbolp(value))
+    {
+        fprintf(stderr, "Cannot get_value non-symbol value: %s\n", repr(value).c_str());
+        abort();
+    }
+    else if (value == g.s_T || value.as_object()->symbol()->is_keyword())
+    {
+        e.emit_push_value(value);
+    }
+    else
+    {
+        compile_get_value(e, scope, value.as_object()->symbol());
+    }
+}
+
+static
+void compile_set_value(bytecode::Emitter &e, Scope *scope, Symbol *symbol)
+{
+    uint32_t idx = ~0u;
+
+    if (scope->resolve_local(symbol, idx))
+    {
+        if (scope->is_root())
+        {
+            assert(idx != ~0u);
+            e.emit_set_global(idx);
+        }
+        else
+        {
+            assert(idx != ~0u);
+            e.emit_set_local(idx);
+        }
+    }
+    else if (scope->resolve_capture(symbol, idx))
+    {
+        assert(idx != ~0u);
+        e.emit_set_capture(idx);
+    }
+    else
+    {
+        auto root = scope->get_root();
+        if (!root->resolve_local(symbol, idx))
+        {
+            root->create_variable(symbol, &idx);
+        }
+        assert(idx != ~0u);
+        e.emit_set_global(idx);
+    }
+}
+
+static
+void compile_set_value(bytecode::Emitter &e, Scope *scope, Value value)
+{
+    if (!symbolp(value))
+    {
+        fprintf(stderr, "Cannot set_value non-symbol value: %s\n", repr(value).c_str());
+        abort();
+    }
+    else
+    {
+        compile_set_value(e, scope, value.as_object()->symbol());
+    }
+}
+
+static
+void compile_body(bytecode::Emitter &e, Scope *scope, Value body, bool tail_position)
 {
     while (!cdr(body).is_nil())
     {
         if (!effect_free(car(body)))
         {
-            compile(e, car(body), false, false);
+            compile(e, scope, car(body), false, false);
             e.emit_pop();
         }
         body = cdr(body);
     }
-    compile(e, car(body), false, tail_position);
+    compile(e, scope, car(body), false, tail_position);
 }
 
 static
-void compile_function(bytecode::Emitter &e, Value expr, bool macro, bool toplevel)
+void compile_function(bytecode::Emitter &e, Scope *scope, Value expr, bool macro, bool toplevel)
 {
     auto name = second(expr);
     auto lambda_list = macro ? third(expr) : second(expr);
     auto body = macro ? cdddr(expr) : cddr(expr);
 
-    bytecode::Emitter function_emitter(e.scope()->push_scope());
+    auto func_scope = scope->push_scope();
+    bytecode::BC_Emitter function_emitter;
     // Optionals are a little tricky because we allow for any expression to be the default value
     // to an optional, this even means that a default value may refer to an earlier parameter eg:
     //     (defun substring (string start &optional (end (length string))) ...)
@@ -126,9 +236,8 @@ void compile_function(bytecode::Emitter &e, Value expr, bool macro, bool topleve
 
     for (auto const symbol : params)
     {
-        function_emitter.scope()->create_variable(symbol);
+        func_scope->create_variable(symbol);
     }
-
 
     std::vector<uint32_t> optional_offsets;
     for (size_t i = 0; i < optionals_start_at; ++i)
@@ -154,21 +263,21 @@ void compile_function(bytecode::Emitter &e, Value expr, bool macro, bool topleve
             if (param.is_cons())
             {
                 auto symbol = first(param).as_object()->symbol();
-                function_emitter.scope()->create_variable(symbol);
+                func_scope->create_variable(symbol);
                 params.push_back(symbol);
 
-                compile(function_emitter, second(param), false);
-                function_emitter.emit_set_value(first(param));
+                compile(function_emitter, func_scope, second(param), false);
+                compile_set_value(function_emitter, func_scope, first(param));
                 function_emitter.emit_pop();
             }
             else
             {
                 auto symbol = param.as_object()->symbol();
-                function_emitter.scope()->create_variable(symbol);
+                func_scope->create_variable(symbol);
                 params.push_back(symbol);
 
                 function_emitter.emit_push_nil();
-                function_emitter.emit_set_value(param);
+                compile_set_value(function_emitter, func_scope, param);
                 function_emitter.emit_pop();
             }
             cur = cdr(cur);
@@ -180,11 +289,11 @@ void compile_function(bytecode::Emitter &e, Value expr, bool macro, bool topleve
     }
 
     auto main_entry_offset = function_emitter.position();
-    compile_body(function_emitter, body, true);
+    compile_body(function_emitter, func_scope, body, true);
     function_emitter.emit_return();
     function_emitter.lock(); // the function MUST be locked before we can resolve captures or move bytecode.
     std::vector<Function::Capture_Offset> capture_offsets;
-    for (auto const &cap : function_emitter.scope()->capture_info())
+    for (auto const &cap : func_scope->capture_info())
     {
         capture_offsets.push_back({
                 cap.index,
@@ -192,17 +301,6 @@ void compile_function(bytecode::Emitter &e, Value expr, bool macro, bool topleve
                 cap.symbol->qualified_name()
             });
     }
-
-    //disassemble(std::cout, "LAMBDA", function_emitter); // @DELETE-ME
-
-    //{
-    //    auto locs = function_emitter.scope()->locals();
-    //    printf("Num locals: %zu\n", locs.size());
-    //    for (size_t i = 0; i < locs.size(); ++i)
-    //    {
-    //        printf(" [%zu]: %s\n", i, locs[i]->symbol()->qualified_name().c_str());
-    //    }
-    //}
 
     auto const *function = new Function(std::move(function_emitter.move_bytecode()),
                                         std::move(optional_offsets),
@@ -214,7 +312,7 @@ void compile_function(bytecode::Emitter &e, Value expr, bool macro, bool topleve
                                         // because we may inline immediate lambda calls which expand the
                                         // number of local variables but not change the arity of the
                                         // outer function.
-                                        function_emitter.scope()->stack_space_needed(),
+                                        func_scope->stack_space_needed(),
                                         has_rest,
                                         has_optionals);
 
@@ -229,12 +327,12 @@ void compile_function(bytecode::Emitter &e, Value expr, bool macro, bool topleve
     }
     bytecode::Debug_Info::track_function(function);
     // We created it in this function, so needs to be deleted here.
-    delete function_emitter.scope();
+    delete func_scope;
 }
 
 
 static
-void compile_function_call(bytecode::Emitter &e, Value func, Value args, bool toplevel, bool tail_position, bool funcall)
+void compile_function_call(bytecode::Emitter &e, Scope *scope, Value func, Value args, bool toplevel, bool tail_position, bool funcall)
 {
     if (func.is_cons() && first(func) == g.s_pLAMBDA)
     {
@@ -242,7 +340,7 @@ void compile_function_call(bytecode::Emitter &e, Value func, Value args, bool to
         {
             // calling a lambda that takes no arguments is directly inlinable,
             // no call needed... :)
-            compile_body(e, cddr(func), tail_position);
+            compile_body(e, scope, cddr(func), tail_position);
             return;
         }
         else if (!toplevel)
@@ -274,7 +372,7 @@ void compile_function_call(bytecode::Emitter &e, Value func, Value args, bool to
                 while (!args.is_nil())
                 {
                     i++;
-                    compile(e, car(args), false);
+                    compile(e, scope, car(args), false);
                     args = cdr(args);
                 }
                 for (; i < symbols.size(); ++i)
@@ -285,25 +383,25 @@ void compile_function_call(bytecode::Emitter &e, Value func, Value args, bool to
                 for (auto symbol_value : symbols)
                 {
                     auto symbol = symbol_value.as_object()->symbol();
-                    auto var = e.scope()->create_variable(symbol);
+                    auto var = scope->create_variable(symbol);
                     vars.push_back(var);
                 }
                 for (auto it = symbols.rbegin(); it != symbols.rend(); ++it)
                 {
-                    e.emit_set_value(*it);
+                    compile_set_value(e, scope, *it);
                     e.emit_pop();
                 }
-                compile_body(e, cddr(func), tail_position);
+                compile_body(e, scope, cddr(func), tail_position);
                 // If we're in the tail position, then the gotocall will handle cleaning up the stack
                 // so there's no need to emit these instructions.
                 if (!tail_position)
                 {
-                    if (e.scope()->capture_info().size() != 0)
+                    if (scope->capture_info().size() != 0)
                     {
                         e.emit_close_values(symbols.size());
                     }
                 }
-                e.scope()->pop_variables(symbols.size());
+                scope->pop_variables(symbols.size());
                 return;
             }
         }
@@ -312,28 +410,28 @@ void compile_function_call(bytecode::Emitter &e, Value func, Value args, bool to
     uint32_t nargs = 0;
     while (!args.is_nil())
     {
-        compile(e, car(args), toplevel);
+        compile(e, scope, car(args), toplevel);
         nargs++;
         args = cdr(args);
     }
     if (func.is_cons() && first(func) == g.s_pLAMBDA)
     {
-        compile(e, func, toplevel);
+        compile(e, scope, func, toplevel);
     }
     else if (funcall)
     {
         if (symbolp(func))
         {
-            e.emit_get_value(func);
+            compile_get_value(e, scope, func);
         }
         else
         {
-            compile(e, func, toplevel);
+            compile(e, scope, func, toplevel);
         }
     }
     else
     {
-        e.emit_push_literal(func);
+        e.emit_push_value(func);
     }
 
     if (tail_position)
@@ -347,21 +445,21 @@ void compile_function_call(bytecode::Emitter &e, Value func, Value args, bool to
 }
 
 
-void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position)
+void compile(bytecode::Emitter &e, Scope *scope, Value expr, bool toplevel, bool tail_position)
 {
     if (expr.is_cons())
     {
-        auto thing = first(expr);
-        auto begin = e.position();
-        auto saved_expr = expr;
+        const auto thing = first(expr);
+        //const auto begin = e.position();
+        //const auto saved_expr = expr;
         if (thing == g.s_QUOTE)
         {
-            e.emit_push_literal(second(expr));
+            e.emit_push_value(second(expr));
         }
         else if (thing == g.s_pGO)
         {
-            auto offs = e.emit_jump();
-            e.backfill_label(offs, second(expr));
+            auto id = e.emit_jump();
+            e.backfill_label(id, second(expr));
         }
         else if (thing == g.s_pTAGBODY)
         {
@@ -373,12 +471,12 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
                 auto it = car(body);
                 if (it.is_cons())
                 {
-                    compile(e, it, toplevel, false);
+                    compile(e, scope, it, toplevel, false);
                     e.emit_pop();
                 }
                 else
                 {
-                    e.make_label(it);
+                    e.user_label(it);
                 }
                 body = cdr(body);
             };
@@ -393,52 +491,51 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
             {
                 if (test.is_nil())
                 {
-                    compile(e, alternative, toplevel, tail_position);
+                    compile(e, scope, alternative, toplevel, tail_position);
                 }
                 else
                 {
-                    compile(e, consequence, toplevel, tail_position);
+                    compile(e, scope, consequence, toplevel, tail_position);
                 }
             }
             else
             {
-                compile(e, test, toplevel);
-                auto alt_offs = e.emit_pop_jump_if_nil();
-                compile(e, consequence, toplevel, tail_position);
+                compile(e, scope, test, toplevel);
+                auto alt_id = e.emit_pop_jump_if_nil();
+                compile(e, scope, consequence, toplevel, tail_position);
                 if (tail_position)
                 {
                     e.emit_return();
-                    auto label_alt = e.position();
-                    compile(e, alternative, toplevel, tail_position);
+                    auto alt_label = e.internal_label();
+                    compile(e, scope, alternative, toplevel, tail_position);
 
-                    e.set_raw<int32_t>(alt_offs, label_alt - (alt_offs-1));
+                    e.resolve_jump(alt_id, alt_label);
                 }
                 else
                 {
-                    auto out_offs = e.emit_jump();
-                    auto label_alt = e.position();
-                    compile(e, alternative, toplevel, tail_position);
-                    auto label_out = e.position();
+                    auto out_id = e.emit_jump();
+                    auto alt_label = e.internal_label();
+                    compile(e, scope, alternative, toplevel, tail_position);
 
-                    e.set_raw<int32_t>(out_offs, label_out - (out_offs-1));
-                    e.set_raw<int32_t>(alt_offs, label_alt - (alt_offs-1));
+                    e.resolve_jump_to_current(out_id);
+                    e.resolve_jump(alt_id, alt_label);
                 }
             }
         }
         else if (thing == g.s_pDEFINE_MACRO)
         {
-            compile_function(e, expr, true, true);
+            compile_function(e, scope, expr, true, true);
         }
         else if (thing == g.s_pLAMBDA)
         {
-            compile_function(e, expr, false, toplevel);
+            compile_function(e, scope, expr, false, toplevel);
         }
         else if (thing == g.s_pSETQ)
         {
-            compile(e, third(expr), toplevel);
+            compile(e, scope, third(expr), toplevel);
             if (symbolp(second(expr)))
             {
-                e.emit_set_value(second(expr));
+                compile_set_value(e, scope, second(expr));
             }
             else
             {
@@ -455,8 +552,8 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
                 nhandlers++;
                 auto handler = car(handlers);
                 auto handler_tag = first(handler);
-                compile_function(e, handler, false, toplevel);
-                e.emit_push_literal(handler_tag);
+                compile_function(e, scope, handler, false, toplevel);
+                e.emit_push_value(handler_tag);
                 if (handler_tag == g.s_T)
                 {
                     //if (!cdr(handlers).is_nil())
@@ -467,11 +564,10 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
                 }
                 handlers = cdr(handlers);
             }
-            auto before_form = e.position();
-            auto offs = e.emit_push_handler_case(nhandlers);
-            compile(e, form, toplevel);
+            auto id = e.emit_push_handler_case(nhandlers);
+            compile(e, scope, form, toplevel);
             e.emit_pop_handler_case();
-            e.set_raw<uint32_t>(offs, e.position() - before_form);
+            e.close_push_handler_case(id);
         }
         else if (thing == g.s_FUNCTION)
         {
@@ -480,7 +576,7 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
             {
                 if (first(thing) == g.s_pLAMBDA)
                 {
-                    compile(e, thing, toplevel);
+                    compile(e, scope, thing, toplevel);
                 }
                 else
                 {
@@ -494,22 +590,22 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
         }
         else if (thing == g.s_pFUNCALL)
         {
-            compile_function_call(e, second(expr), cddr(expr), toplevel, tail_position, true);
+            compile_function_call(e, scope, second(expr), cddr(expr), toplevel, tail_position, true);
         }
         else if (thing == g.s_pCONS)
         {
-            compile(e, second(expr), toplevel);
-            compile(e, third(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
+            compile(e, scope, third(expr), toplevel);
             e.emit_cons();
         }
         else if (thing == g.s_pCAR)
         {
-            compile(e, second(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
             e.emit_car();
         }
         else if (thing == g.s_pCDR)
         {
-            compile(e, second(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
             e.emit_cdr();
         }
         else if (thing == g.s_pSIGNAL)
@@ -519,47 +615,47 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
             auto args = cddr(expr);
             while (!args.is_nil())
             {
-                compile(e, car(args), toplevel);
+                compile(e, scope, car(args), toplevel);
                 args = cdr(args);
                 nargs++;
             }
-            compile(e, tag, toplevel);
+            compile(e, scope, tag, toplevel);
             e.emit_raise_signal(nargs);
         }
         else if (thing == g.s_pEQ)
         {
-            compile(e, second(expr), toplevel);
-            compile(e, third(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
+            compile(e, scope, third(expr), toplevel);
             e.emit_eq();
         }
         else if (thing == g.s_pRPLACA)
         {
-            compile(e, second(expr), toplevel);
-            compile(e, third(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
+            compile(e, scope, third(expr), toplevel);
             e.emit_rplaca();
         }
         else if (thing == g.s_pRPLACD)
         {
-            compile(e, second(expr), toplevel);
-            compile(e, third(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
+            compile(e, scope, third(expr), toplevel);
             e.emit_rplacd();
         }
         else if (thing == g.s_pAREF)
         {
-            compile(e, second(expr), toplevel);
-            compile(e, third(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
+            compile(e, scope, third(expr), toplevel);
             e.emit_aref();
         }
         else if (thing == g.s_pASET)
         {
-            compile(e, second(expr), toplevel);
-            compile(e, third(expr), toplevel);
-            compile(e, fourth(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
+            compile(e, scope, third(expr), toplevel);
+            compile(e, scope, fourth(expr), toplevel);
             e.emit_aset();
         }
         else if (thing == g.s_pDEBUGGER)
         {
-            compile(e, second(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
             e.emit_debug_trap();
         }
         else if (thing == g.s_pAPPLY)
@@ -568,11 +664,11 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
             auto args = cddr(expr);
             while (!args.is_nil())
             {
-                compile(e, car(args), toplevel);
+                compile(e, scope, car(args), toplevel);
                 nargs++;
                 args = cdr(args);
             }
-            compile(e, second(expr), toplevel);
+            compile(e, scope, second(expr), toplevel);
             e.emit_apply(nargs);
         }
         else
@@ -583,22 +679,22 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
                 auto b = third(expr);
                 if (a.is_fixnum() && b.is_fixnum())
                 {
-                    e.emit_push_literal(a + b);
+                    e.emit_push_value(a + b);
                 }
                 else if (a == Value::wrap_fixnum(1))
                 {
-                    compile(e, b, toplevel);
+                    compile(e, scope, b, toplevel);
                     e.emit_add_1();
                 }
                 else if (b == Value::wrap_fixnum(1))
                 {
-                    compile(e, a, toplevel);
+                    compile(e, scope, a, toplevel);
                     e.emit_add_1();
                 }
                 else
                 {
-                    compile(e, a, toplevel);
-                    compile(e, b, toplevel);
+                    compile(e, scope, a, toplevel);
+                    compile(e, scope, b, toplevel);
                     e.emit_add();
                 }
             }
@@ -608,38 +704,39 @@ void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position
                 auto b = third(expr);
                 if (a.is_fixnum() && b.is_fixnum())
                 {
-                    e.emit_push_literal(a - b);
+                    e.emit_push_value(a - b);
                 }
                 else if (b == Value::wrap_fixnum(1))
                 {
-                    compile(e, a, toplevel);
+                    compile(e, scope, a, toplevel);
                     e.emit_sub_1();
                 }
                 else
                 {
-                    compile(e, a, toplevel);
-                    compile(e, b, toplevel);
+                    compile(e, scope, a, toplevel);
+                    compile(e, scope, b, toplevel);
                     e.emit_sub();
                 }
             }
             else
             {
-                compile_function_call(e, first(expr), rest(expr), toplevel, tail_position, false);
+                compile_function_call(e, scope, first(expr), rest(expr), toplevel, tail_position, false);
             }
         }
-        if (thing != g.s_QUOTE && thing != g.s_FUNCTION)
-        {
-            auto end = e.position();
-            e.map_range_to(begin, end, saved_expr);
-        }
+        // FIXME: I think this was supposed to be a way to map a bytecode address to an expressed...
+        //if (thing != g.s_QUOTE && thing != g.s_FUNCTION)
+        //{
+        //    auto end = e.position();
+        //    e.map_range_to(begin, end, saved_expr);
+        //}
     }
     else if (symbolp(expr))
     {
-        e.emit_get_value(expr);
+        compile_get_value(e, scope, expr);
     }
     else
     {
-        e.emit_push_literal(expr);
+        e.emit_push_value(expr);
     }
 }
 

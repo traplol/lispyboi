@@ -29,6 +29,8 @@
 #include "bytecode/emitter.hpp"
 #include "bytecode/opcode.hpp"
 #include "bytecode/disassemble.hpp"
+#include "bytecode/bc_emitter.hpp"
+#include "bytecode/list_emitter.hpp"
 
 lisp::compiler::Scope *THE_ROOT_SCOPE;
 
@@ -83,12 +85,6 @@ std::string Symbol::qualified_name() const
         res += m_name;
     }
     return res;
-}
-
-
-namespace bytecode
-{
-struct Emitter;
 }
 
 static Value macro_expand_impl(Value obj, VM_State &vm, bool just_one = false);
@@ -363,7 +359,7 @@ Value GC::alloc_string(const std::string &str)
 
 
 static void set_global(compiler::Scope *scope, Value symbol_value, Value value);
-static void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope);
+static void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope, bool print_disassembly = false);
 
 struct Function_Initializer
 {
@@ -431,10 +427,10 @@ DEFUN("%DISASSEMBLE", func_disassemble, g.kernel_str(), false)
         try
         {
             auto expanded = macro_expand_impl(expr, *THE_LISP_VM);
-            bytecode::Emitter e(compiler::THE_ROOT_SCOPE);
-            compiler::compile(e, expanded, true);
+            bytecode::BC_Emitter e;
+            compiler::compile(e, compiler::THE_ROOT_SCOPE, expanded, true);
             e.lock();
-            bytecode::disassemble(std::cout, tag, e);
+            bytecode::disassemble(std::cout, tag, e.bytecode());
         }
         catch (VM_State::Signal_Exception ex)
         {
@@ -3620,19 +3616,44 @@ void trace_signal_exception(VM_State &vm, const VM_State::Signal_Exception &e)
 }
 
 static
-void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope)
+void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope, bool print_disassembly)
 {
     auto expanded = macro_expand_impl(expr, vm);
 
-    bytecode::Emitter e(&root_scope);
-    compiler::compile(e, expanded, true, false);
+    bytecode::BC_Emitter e;
+    compiler::compile(e, &root_scope, expanded, true, false);
     e.emit_halt();
     e.lock();
+
+    bytecode::List_Emitter le;
+    compiler::compile(le, &root_scope, expanded, true, false);
+    le.emit_halt();
 
     g.resize_globals(compiler::THE_ROOT_SCOPE->locals().size());
 
     vm.push_frame(nullptr, 0);
+
+    if (print_disassembly)
+    {
+        le.pp();
+        //bytecode::disassemble(std::cout, "DISASM", e.bytecode());
+    }
+
     vm.execute(e.bytecode().data());
+
+}
+
+static
+void compile_disasm(VM_State &vm, Value expr, compiler::Scope &root_scope)
+{
+    auto expanded = macro_expand_impl(expr, vm);
+
+    bytecode::BC_Emitter e;
+    compiler::compile(e, &root_scope, expanded, true, false);
+    e.emit_halt();
+    e.lock();
+
+    bytecode::disassemble(std::cout, "DISASM", e.bytecode());
 }
 
 
@@ -3710,8 +3731,18 @@ bool eval_file(VM_State &vm, compiler::Scope &root_scope, const std::filesystem:
     }
 }
 
-void run_repl(VM_State &vm, compiler::Scope &root_scope)
+void run_repl(VM_State &vm, compiler::Scope &root_scope, bool disassemble)
 {
+    fprintf(stdout, "lispyboi v0.1\n");
+    fprintf(stdout, "    Debug level: " STR(DEBUG) "\n");
+#if defined(USE_TAILCALLS) && USE_TAILCALLS
+    fprintf(stdout, "    Using tailcall VM dispatch.\n\n");
+#elif defined(USE_COMPUTED_GOTOS) && USE_COMPUTED_GOTOS
+    fprintf(stdout, "    Using computed-gotos VM dispatch.\n\n");
+#else
+    fprintf(stdout, "    Using switch VM dispatch.\n\n");
+#endif
+
     set_global(&root_scope,
                g.core()->export_symbol("*FILE-PATH*"),
                gc.alloc_string("<stdin>"));
@@ -3755,7 +3786,7 @@ void run_repl(VM_State &vm, compiler::Scope &root_scope)
             auto out_handle = gc.pin_value(out);
             try
             {
-                compile_execute(vm, out, root_scope);
+                compile_execute(vm, out, root_scope, disassemble);
                 gc.unpin_value(out_handle);
             }
             catch (VM_State::Signal_Exception e)
@@ -3784,6 +3815,7 @@ void run_repl(VM_State &vm, compiler::Scope &root_scope)
     }
 }
 
+
 }
 
 int main(int argc, char **argv)
@@ -3791,6 +3823,8 @@ int main(int argc, char **argv)
     using namespace lisp;
     bool use_boot = true;
     bool repl = false;
+    bool list_emitter_tests = false;
+    bool disassemble = false;
     char *file = nullptr;
 
     int i = 1;
@@ -3809,6 +3843,14 @@ int main(int argc, char **argv)
             else if (strcmp("-i", argv[i]) == 0)
             {
                 repl = true;
+            }
+            else if (strcmp("-l", argv[i]) == 0)
+            {
+                list_emitter_tests = true;
+            }
+            else if (strcmp("-d", argv[i]) == 0)
+            {
+                disassemble = true;
             }
             else if (strcmp("-", argv[i]) == 0)
             {
@@ -3833,9 +3875,18 @@ int main(int argc, char **argv)
 
     g.packages.in_package(g.user());
 
+    if (list_emitter_tests)
+    {
+        auto em = new lisp::bytecode::List_Emitter;
+        em->do_tests();
+        delete em;
+        return 0;
+    }
+
     auto vm = THE_LISP_VM = new VM_State;
 
     gc.set_paused(false);
+
     if (use_boot)
     {
         auto exe_dir = plat::get_executable_path().parent_path();
@@ -3850,7 +3901,7 @@ int main(int argc, char **argv)
 
     if (repl)
     {
-        run_repl(*vm, *compiler::THE_ROOT_SCOPE);
+        run_repl(*vm, *compiler::THE_ROOT_SCOPE, disassemble);
     }
 
 #if PROFILE_OPCODE_PAIRS

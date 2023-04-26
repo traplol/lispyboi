@@ -3,13 +3,14 @@
 
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "../defines.hpp"
 #include "../value.hpp"
 
 namespace lisp::bytecode
 {
-struct Emitter;
+class Emitter;
 
 void put_bytes(std::ostream &out, const uint8_t *bytes, size_t nbytes, size_t min_width=10*3);
 
@@ -24,7 +25,7 @@ int disassemble(std::ostream &out, const std::string &tag, const uint8_t *ip, bo
 
 int disassemble(std::ostream &out, const std::string &tag, const uint8_t *start, const uint8_t *end, const uint8_t *ip = nullptr);
 
-int disassemble(std::ostream &out, const std::string &tag, const Emitter &e);
+int disassemble(std::ostream &out, const std::string &tag, const std::vector<uint8_t> &bytecode);
 
 int disassemble(std::ostream &out, const std::string &tag, const Function *function, const uint8_t *ip);
 

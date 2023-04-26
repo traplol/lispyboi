@@ -66,7 +66,6 @@ const uint8_t *disassemble1(std::ostream &out, const uint8_t *ip, bool here)
             ip += size;
         } break;
 
-
         case Opcode::op_jump:
         case Opcode::op_pop_jump_if_nil:
         {
@@ -216,10 +215,10 @@ int disassemble(std::ostream &out, const std::string &tag, const uint8_t *start,
     return lines_printed;
 }
 
-int disassemble(std::ostream &out, const std::string &tag, const Emitter &e)
+int disassemble(std::ostream &out, const std::string &tag, const std::vector<uint8_t> &bytecode)
 {
-    auto start = e.bytecode().data();
-    auto end = start + e.bytecode().size();
+    auto start = bytecode.data();
+    auto end = start + bytecode.size();
     return disassemble(out, tag, start, end, nullptr);
 }
 

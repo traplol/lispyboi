@@ -332,7 +332,7 @@ OPCODE(get_local)
     aux1 = *reinterpret_cast<const uint32_t*>(ip+1);
     vm.push_param(vm.m_locals[aux1]);
     ip += 5;
-    PREDICT(get_local);
+    //PREDICT(get_local);
     DISPATCH_NEXT;
 }
 

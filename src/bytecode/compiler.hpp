@@ -8,12 +8,11 @@ namespace lisp
 {
 namespace bytecode
 {
-struct Emitter;
+class Emitter;
 }
 namespace compiler
 {
 
-void compile(bytecode::Emitter &e, Value expr, bool toplevel, bool tail_position = false);
 
 struct Scope;
 
@@ -191,6 +190,8 @@ struct Scope
 };
 
 extern Scope *THE_ROOT_SCOPE;
+
+void compile(bytecode::Emitter &e, Scope *scope, Value expr, bool toplevel, bool tail_position = false);
 
 }
 

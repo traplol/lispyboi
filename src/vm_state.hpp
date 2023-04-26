@@ -11,7 +11,7 @@ namespace lisp
 
 namespace bytecode
 {
-struct Emitter;
+class BC_Emitter;
 }
 
 struct VM_State
@@ -159,13 +159,16 @@ struct VM_State
 #if USE_COMPUTED_GOTOS
         if (g.debugger.breaking)
         {
-            return execute_impl<true>(ip);
+            return execute_impl_debug(ip);
+            //return execute_impl<true>(ip);
         }
-        return execute_impl<false>(ip);
+        return execute_impl_nodebug(ip);
+        //return execute_impl<false>(ip);
 #elif USE_TAILCALLS
         return execute_impl_tailcalls(ip);
 #else
-        return execute_impl<true>(ip);
+        return execute_impl_debug(ip);
+        //return execute_impl<true>(ip);
 #endif
     }
 
@@ -290,6 +293,8 @@ struct VM_State
     template<bool debuggable>
     const uint8_t *execute_impl(const uint8_t *ip);
 
+    const uint8_t *execute_impl_debug(const uint8_t *ip);
+    const uint8_t *execute_impl_nodebug(const uint8_t *ip);
     const uint8_t *execute_impl_tailcalls(const uint8_t *ip);
 
     void gc_mark(GC &gc)
@@ -333,7 +338,7 @@ struct VM_State
             , nargs_offset(0)
             , function_offset(0)
         {}
-        bytecode::Emitter *emitter;
+        bytecode::BC_Emitter *emitter;
         uint32_t nargs_offset;
         uint32_t function_offset;
     } m_stub;
