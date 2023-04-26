@@ -37,7 +37,6 @@
 
 (assert-string= "(1 (((NIL))) 2)" (format nil "~a" '(1 (((()))) 2)))
 
-
 (assert-string= "15" (format nil "~a" 15))
 (assert-string= "15" (format nil "~s" 15))
 (assert-string= "15" (format nil "~d" 15))
@@ -45,19 +44,24 @@
 (assert-string= "17" (format nil "~o" 15))
 (assert-string= "1111" (format nil "~b" 15))
 
-(assert-eq 'handled (handler-case (format nil "~d" #\a)
-                      (format-error (&rest args)
-                        'handled)))
-(assert-eq 'handled (handler-case (format nil "~x" #\a)
-                      (format-error (&rest args)
-                        'handled)))
-(assert-eq 'handled (handler-case (format nil "~o" #\a)
-                      (format-error (&rest args)
-                        'handled)))
-(assert-eq 'handled (handler-case (format nil "~b" #\a)
-                      (format-error (&rest args)
-                        'handled)))
+(assert-string= "a" (format nil "~d" #\a))
+(assert-string= "a" (format nil "~x" #\a))
+(assert-string= "a" (format nil "~o" #\a))
+(assert-string= "a" (format nil "~b" #\a))
+(assert-string= "11111111111111111111111111111111111111111111111111111111111111"
+                (format nil "~b" +most-positive-fixnum+))
+(assert-string= "-100000000000000000000000000000000000000000000000000000000000000"
+                (format nil "~b" +most-negative-fixnum+))
+(assert-string= "-11111111111111111111111111111111111111111111111111111111111111"
+                (format nil "~b" (+ 1 +most-negative-fixnum+)))
 
+(assert-string= "3FFFFFFFFFFFFFFF" (format nil "~x" +most-positive-fixnum+))
+(assert-string= "-4000000000000000" (format nil "~x" +most-negative-fixnum+))
+(assert-string= "-3FFFFFFFFFFFFFFF" (format nil "~x" (+ 1 +most-negative-fixnum+)))
+
+(assert-string= "377777777777777777777" (format nil "~o" +most-positive-fixnum+))
+(assert-string= "-400000000000000000000" (format nil "~o" +most-negative-fixnum+))
+(assert-string= "-377777777777777777777" (format nil "~o" (+ 1 +most-negative-fixnum+)))
 
 (assert-string= "0" (format nil "~x" 0))
 (assert-string= "1" (format nil "~x" 1))
