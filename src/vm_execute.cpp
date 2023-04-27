@@ -1,3 +1,4 @@
+#include <assert.h>
 #include "util.hpp"
 #include "bytecode/opcode.hpp"
 #include "bytecode/emitter.hpp"
