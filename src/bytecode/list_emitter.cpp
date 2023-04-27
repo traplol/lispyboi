@@ -1,8 +1,10 @@
 #include <iostream>
 #include <iomanip>
+#include <map>
 #include "../defines.hpp"
 #include "../vm_state.hpp"
 #include "list_emitter.hpp"
+#include "bc_emitter.hpp"
 
 using namespace lisp;
 using namespace lisp::bytecode;
@@ -373,6 +375,7 @@ void *List_Emitter::emit_push_handler_case(uint32_t num_handlers)
     auto node = new Bytecode_List;
     node->opcode = Opcode::op_push_handler_case;
     node->operands[0].num = num_handlers;
+    node->operands[1].destination = nullptr;
     append(node);
     return node;
 }
@@ -428,6 +431,196 @@ void List_Emitter::backfill_label(void *branch_id, Value tag)
     m_backfills.push_back({tag, reinterpret_cast<Bytecode_List*>(branch_id)});
 }
 
+bool List_Emitter::label_to_offset(void *label, uint32_t &out_offset)
+{
+    if (!m_finalized)
+        return false;
+
+    auto it = m_final_label_offset_map.find(label);
+    if (it != m_final_label_offset_map.end())
+    {
+        out_offset = it->second;
+        return true;
+    }
+    return false;
+}
+
+void List_Emitter::finalize()
+{
+    do_optimizations();
+
+    convert_to_bytecode();
+    
+    m_finalized = true;
+}
+
+const std::vector<uint8_t> &List_Emitter::bytecode() const
+{
+    assert(m_finalized);
+    return m_bytecode;
+}
+
+std::vector<uint8_t> &&List_Emitter::move_bytecode()
+{
+    assert(m_finalized);
+    return std::move(m_bytecode);
+}
+
+Emitter *List_Emitter::of_same_type() const
+{
+    return new List_Emitter;
+}
+
+void List_Emitter::do_optimizations()
+{
+}
+
+static void pp_label(std::ostream &out, Bytecode_List *bc);
+void List_Emitter::convert_to_bytecode()
+{
+    // We'll cheat and use the BC_Emitter to correctly generate the binary format
+    BC_Emitter e;
+
+    std::map<Bytecode_List*, void*>branches;
+    
+    auto cur = m_head;
+    while (cur)
+    {
+        if (cur->is_label)
+        {
+            m_final_label_offset_map[cur] = e.position();
+        }
+        else switch (cur->opcode)
+        {
+            case Opcode::op_get_global:   e.emit_get_global(cur->operands[0].num); break;
+            case Opcode::op_set_global:   e.emit_set_global(cur->operands[0].num); break;
+            case Opcode::op_get_local:    e.emit_get_local(cur->operands[0].num); break;
+            case Opcode::op_set_local:    e.emit_set_local(cur->operands[0].num); break;
+            case Opcode::op_get_capture:  e.emit_get_capture(cur->operands[0].num); break;
+            case Opcode::op_set_capture:  e.emit_set_capture(cur->operands[0].num); break;
+            case Opcode::op_close_values: e.emit_close_values(cur->operands[0].num); break;
+            case Opcode::op_raise_signal: e.emit_raise_signal(cur->operands[0].num); break;
+
+            case Opcode::op_funcall:
+                e.emit_funcall(cur->operands[0].num);
+                break;
+            case Opcode::op_gotocall:
+                e.emit_gotocall(cur->operands[0].num);
+                break;
+            case Opcode::op_apply: e.emit_apply(cur->operands[0].num);
+                break;
+
+            case Opcode::op_jump:
+                branches[cur] = e.emit_jump(nullptr);
+                break;
+            case Opcode::op_pop_jump_if_nil:
+                branches[cur] = e.emit_pop_jump_if_nil(nullptr);
+                break;
+            
+            case Opcode::op_function_value:
+                e.emit_function_value(cur->operands[0].value);
+                break;
+            case Opcode::op_push_value:
+                e.emit_push_value(cur->operands[0].value);
+                break;
+
+            case Opcode::op_push_handler_case:
+                branches[cur] = e.emit_push_handler_case(cur->operands[0].num);
+                break;
+
+            case Opcode::op_instantiate_closure:
+                e.emit_instantiate_closure(cur->operands[0].function);
+                break;
+
+            case Opcode::op_return:
+                e.emit_return();
+                break;
+            case Opcode::op_pop:
+                e.emit_pop();
+                break;
+            case Opcode::op_push_nil:
+                e.emit_push_nil();
+                break;
+            case Opcode::op_push_fixnum_0:
+                e.emit_push_fixnum_0();
+                break;
+            case Opcode::op_push_fixnum_1:
+                e.emit_push_fixnum_1();
+                break;
+            case Opcode::op_cons:
+                e.emit_cons();
+                break;
+            case Opcode::op_car:
+                e.emit_car();
+                break;
+            case Opcode::op_cdr:
+                e.emit_cdr();
+                break;
+            case Opcode::op_halt:
+                e.emit_halt();
+                break;
+            case Opcode::op_pop_handler_case:
+                e.emit_pop_handler_case();
+                break;
+            case Opcode::op_eq:
+                e.emit_eq();
+                break;
+            case Opcode::op_rplaca:
+                e.emit_rplaca();
+                break;
+            case Opcode::op_rplacd:
+                e.emit_rplacd();
+                break;
+            case Opcode::op_aref:
+                e.emit_aref();
+                break;
+            case Opcode::op_aset:
+                e.emit_aset();
+                break;
+            case Opcode::op_debug_trap:
+                e.emit_debug_trap();
+                break;
+            case Opcode::op_add:
+                e.emit_add();
+                break;
+            case Opcode::op_add_1:
+                e.emit_add_1();
+                break;
+            case Opcode::op_sub:
+                e.emit_sub();
+                break;
+            case Opcode::op_sub_1:
+                e.emit_sub_1();
+                break;
+        }
+        cur = cur->next;
+    }
+
+    for (auto [branch, e_branch_id] : branches)
+    {
+        if (branch->opcode == Opcode::op_push_handler_case)
+        {
+            auto dest_label = branch->operands[1].destination;
+            assert(dest_label && dest_label->is_label);
+            uintptr_t label_offset = m_final_label_offset_map[dest_label];
+
+            e.close_push_handler_case(e_branch_id, reinterpret_cast<void*>(label_offset));
+        }
+        else if (branch->opcode == Opcode::op_jump || branch->opcode == Opcode::op_pop_jump_if_nil)
+        {
+            auto dest_label = branch->operands[0].destination;
+            assert(dest_label && dest_label->is_label);
+            uintptr_t label_offset = m_final_label_offset_map[dest_label];
+
+            e.resolve_jump(e_branch_id, reinterpret_cast<void*>(label_offset));
+        }
+    }
+
+    e.finalize();
+    m_bytecode = std::move(e.move_bytecode());
+}
+
+static
 void pp_label(std::ostream &out, Bytecode_List *bc)
 {
     if (!bc)
@@ -460,9 +653,11 @@ void pp_label(std::ostream &out, Bytecode_List *bc)
     }
 }
 
-void List_Emitter::pp()
+void List_Emitter::pp(const char *tag)
 {
     using namespace std;
+
+    cout << tag << "\n";
 
     auto cur = m_head;
     while (cur)
@@ -607,6 +802,6 @@ void List_Emitter::do_tests()
     resolve_jump_to_current(jmp2);
     resolve_jump_to_current(jmp3);
     
-    pp();
+    pp("do_tests");
 
 }

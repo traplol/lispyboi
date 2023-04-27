@@ -182,16 +182,20 @@ void *BC_Emitter::emit_push_handler_case(uint32_t num_handlers)
     append(Opcode::op_push_handler_case);
     append(num_handlers);
     auto offset = position();
-    append<int32_t>(0xDEADBEEF);
+    append<uint32_t>(0xDEADBEEF);
     return reinterpret_cast<void*>(offset);
 }
 
-void BC_Emitter::close_push_handler_case(void *handler_id)
+void BC_Emitter::close_push_handler_case(void *handler_id, void *destination)
 {
     auto id = reinterpret_cast<intptr_t>(handler_id);
-    auto dest = position() - id;
+    auto dest = reinterpret_cast<intptr_t>(destination) - id;
     dest += (sizeof(uint32_t) + 1);
-    set_raw<int32_t>(id, dest);
+    set_raw<uint32_t>(id, dest);
+}
+void BC_Emitter::close_push_handler_case(void *handler_id)
+{
+    close_push_handler_case(handler_id, reinterpret_cast<void*>(position()));
 }
 
 void BC_Emitter::emit_pop_handler_case()
@@ -275,7 +279,7 @@ int32_t BC_Emitter::position() const
     return m_bytecode.size();
 }
 
-void BC_Emitter::lock()
+void BC_Emitter::finalize()
 {
     if (m_locked)
     {
@@ -392,4 +396,15 @@ void BC_Emitter::backfill_label(void *branch_id, Value tag)
 void *BC_Emitter::internal_label(const char* /*label_tag*/)
 {
     return reinterpret_cast<void*>(position());
+}
+
+bool BC_Emitter::label_to_offset(void *label, uint32_t &out_offset)
+{
+    out_offset = reinterpret_cast<uintptr_t>(label);
+    return true;
+}
+
+Emitter *BC_Emitter::of_same_type() const
+{
+    return new BC_Emitter;
 }

@@ -21,6 +21,8 @@ class BC_Emitter : public Emitter
         : m_locked(false)
     {}
 
+    virtual Emitter *of_same_type() const override;
+
     virtual void emit_push_value(Value value) override;
     virtual void emit_push_nil() override;
     virtual void emit_push_fixnum_0() override;
@@ -72,6 +74,7 @@ class BC_Emitter : public Emitter
 
     virtual void resolve_jump(void *branch_id, void *destination) override;
     virtual void resolve_jump_to_current(void *branch_id) override;
+    void close_push_handler_case(void *id, void *destination);
     virtual void close_push_handler_case(void *id) override;
     virtual void backfill_label(void *branch_id, Value tag) override;
 
@@ -85,11 +88,14 @@ class BC_Emitter : public Emitter
     virtual void *user_label(Value tag) override;
     virtual void *internal_label(const char *label_tag) override;
 
+    virtual bool label_to_offset(void *label, uint32_t &out_offset) override;
+
+    virtual void finalize() override;
+    virtual const std::vector<uint8_t> &bytecode() const override;
+    virtual std::vector<uint8_t> &&move_bytecode() override;
+
     int32_t position() const;
-    void lock();
     void map_range_to(size_t begin, size_t end, Value expr);
-    const std::vector<uint8_t> &bytecode() const;
-    std::vector<uint8_t> &&move_bytecode();
 
 
     template<typename T>

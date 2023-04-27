@@ -47,13 +47,16 @@ class List_Emitter : public Emitter
   public:
 
     List_Emitter()
-        : m_head(nullptr)
+        : m_finalized(false)
+        , m_head(nullptr)
         , m_current(nullptr)
         , m_label_id(0)
     {}
 
-    void pp();
+    virtual void pp(const char *tag) override;
     void do_tests();
+
+    virtual Emitter *of_same_type() const override;
 
     virtual void emit_push_value(Value value) override;
     virtual void emit_push_nil() override;
@@ -118,12 +121,20 @@ class List_Emitter : public Emitter
     virtual void resolve_jump_to_current(void *branch_id) override;
     virtual void close_push_handler_case(void *handler_case_id) override;
     virtual void backfill_label(void *branch_id, Value tag) override;
+    virtual bool label_to_offset(void *label, uint32_t &out_offset) override;
+
+    virtual void finalize() override;
+    virtual const std::vector<uint8_t> &bytecode() const override;
+    virtual std::vector<uint8_t> &&move_bytecode() override;
+
 
     Bytecode_List *current() const;
 
   private:
     void append(Bytecode_List *node);
     Bytecode_List *get_label(Value tag);
+    void do_optimizations();
+    void convert_to_bytecode();
 
     struct Backfill_Info
     {
@@ -131,6 +142,7 @@ class List_Emitter : public Emitter
         Bytecode_List *branch;
     };
 
+    bool m_finalized;
     Bytecode_List *m_head;
     Bytecode_List *m_current;
     int32_t m_label_id;
@@ -139,6 +151,8 @@ class List_Emitter : public Emitter
     std::vector<Label_Map> m_label_stack;
     std::unordered_map<int32_t, Bytecode_List*> m_internal_labels;
     std::list<Backfill_Info> m_backfills;
+    std::vector<uint8_t> m_bytecode;
+    std::unordered_map<void*, uint32_t> m_final_label_offset_map;
 };
 
 }

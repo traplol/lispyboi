@@ -248,7 +248,7 @@ Value VM_State::call_lisp_function(Value function_or_symbol, Value *args, uint32
         m_stub.nargs_offset = m_stub.emitter->position() + 1;
         m_stub.emitter->emit_funcall(nargs);
         m_stub.emitter->emit_halt();
-        m_stub.emitter->lock();
+        m_stub.emitter->finalize();
     }
     else
     {

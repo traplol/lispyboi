@@ -427,9 +427,9 @@ DEFUN("%DISASSEMBLE", func_disassemble, g.kernel_str(), false)
         try
         {
             auto expanded = macro_expand_impl(expr, *THE_LISP_VM);
-            bytecode::BC_Emitter e;
+            bytecode::List_Emitter e;
             compiler::compile(e, compiler::THE_ROOT_SCOPE, expanded, true);
-            e.lock();
+            e.finalize();
             bytecode::disassemble(std::cout, tag, e.bytecode());
         }
         catch (VM_State::Signal_Exception ex)
@@ -3620,14 +3620,10 @@ void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope, bool
 {
     auto expanded = macro_expand_impl(expr, vm);
 
-    bytecode::BC_Emitter e;
+    bytecode::List_Emitter e;
     compiler::compile(e, &root_scope, expanded, true, false);
     e.emit_halt();
-    e.lock();
-
-    bytecode::List_Emitter le;
-    compiler::compile(le, &root_scope, expanded, true, false);
-    le.emit_halt();
+    e.finalize();
 
     g.resize_globals(compiler::THE_ROOT_SCOPE->locals().size());
 
@@ -3635,27 +3631,13 @@ void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope, bool
 
     if (print_disassembly)
     {
-        le.pp();
-        //bytecode::disassemble(std::cout, "DISASM", e.bytecode());
+        e.pp("compile_execute:");
+        bytecode::disassemble(std::cout, "DISASM", e.bytecode());
     }
 
     vm.execute(e.bytecode().data());
 
 }
-
-static
-void compile_disasm(VM_State &vm, Value expr, compiler::Scope &root_scope)
-{
-    auto expanded = macro_expand_impl(expr, vm);
-
-    bytecode::BC_Emitter e;
-    compiler::compile(e, &root_scope, expanded, true, false);
-    e.emit_halt();
-    e.lock();
-
-    bytecode::disassemble(std::cout, "DISASM", e.bytecode());
-}
-
 
 bool eval_file(VM_State &vm, compiler::Scope &root_scope, const std::filesystem::path &path)
 {

@@ -1,6 +1,8 @@
 #ifndef _LISPYBOI_EMITTER_
 #define _LISPYBOI_EMITTER_
 
+#include <vector>
+
 namespace lisp::bytecode
 {
 
@@ -8,6 +10,10 @@ class Emitter
 {
   public:
     virtual ~Emitter() {}
+
+    virtual void pp(const char *tag) {}
+    virtual Emitter *of_same_type() const = 0;
+
     virtual void emit_push_value(Value value) = 0;
     virtual void emit_push_nil() = 0;
     virtual void emit_push_fixnum_0() = 0;
@@ -78,6 +84,12 @@ class Emitter
     virtual void *user_label(Value tag) = 0;
     // label_tag is merely a hint, it may be unused by the emitter.
     virtual void *internal_label(const char *label_tag = nullptr) = 0;
+
+    virtual bool label_to_offset(void *label, uint32_t &out_offset) = 0;
+
+    virtual void finalize() = 0;
+    virtual const std::vector<uint8_t> &bytecode() const = 0;
+    virtual std::vector<uint8_t> &&move_bytecode() = 0;
 
     //virtual int32_t position() const = 0;
     //virtual void lock() = 0;
