@@ -83,12 +83,11 @@ class BC_Emitter : public Emitter
     virtual void push_labels() override;
     virtual void pop_labels() override;
     virtual void *user_label(Value tag) override;
-    virtual void *internal_label() override;
+    virtual void *internal_label(const char *label_tag) override;
 
     int32_t position() const;
     void lock();
     void map_range_to(size_t begin, size_t end, Value expr);
-    bool get_label(Value tag, int32_t &out_offset);
     const std::vector<uint8_t> &bytecode() const;
     std::vector<uint8_t> &&move_bytecode();
 
@@ -102,6 +101,8 @@ class BC_Emitter : public Emitter
     }
 
   private:
+    bool get_label(Value tag, int32_t &out_offset);
+
     struct Backfill_Info
     {
         Value tag;

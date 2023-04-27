@@ -389,7 +389,7 @@ void BC_Emitter::backfill_label(void *branch_id, Value tag)
     m_backfills.push_back({tag, static_cast<int32_t>(offset)});
 }
 
-void *BC_Emitter::internal_label()
+void *BC_Emitter::internal_label(const char* /*label_tag*/)
 {
     return reinterpret_cast<void*>(position());
 }

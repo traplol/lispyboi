@@ -76,7 +76,8 @@ class Emitter
     virtual void push_labels() = 0;
     virtual void pop_labels() = 0;
     virtual void *user_label(Value tag) = 0;
-    virtual void *internal_label() = 0;
+    // label_tag is merely a hint, it may be unused by the emitter.
+    virtual void *internal_label(const char *label_tag = nullptr) = 0;
 
     //virtual int32_t position() const = 0;
     //virtual void lock() = 0;

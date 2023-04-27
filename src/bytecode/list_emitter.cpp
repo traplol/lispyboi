@@ -286,10 +286,41 @@ void List_Emitter::push_labels()
 void List_Emitter::pop_labels()
 {
     assert(m_label_stack.size() != 0);
+
+    {
+        auto it = m_backfills.begin();
+        while (it != m_backfills.end())
+        {
+            if (auto label = get_label(it->tag))
+            {
+                it->branch->operands[0].destination = label;
+                it = m_backfills.erase(it);
+            }
+            else
+            {
+                it++;
+            }
+        }
+    }
+
     m_label_stack.pop_back();
+    //if (m_label_stack.size() == 0 && !m_backfills.empty())
+    //{
+    //    std::vector<Value> vals;
+    //    for (auto const &it : m_backfills)
+    //    {
+    //        vals.push_back(it.tag);
+    //    }
+    //    GC_GUARD();
+    //    auto signal_args = gc.list(g.s_SIMPLE_ERROR,
+    //                               gc.alloc_string("No label tag found"),
+    //                               to_list(vals));
+    //    GC_UNGUARD();
+    //    throw VM_State::Signal_Exception(signal_args);
+    //}
 }
 
-void *List_Emitter::get_label(Value tag)
+Bytecode_List *List_Emitter::get_label(Value tag)
 {
     for (auto it = m_label_stack.rbegin(); it != m_label_stack.rend(); ++it)
     {
@@ -316,17 +347,21 @@ void *List_Emitter::user_label(Value tag)
     }
     auto node = new Bytecode_List;
     node->is_label = true;
+    node->is_internal_label = false;
     node->operands[0].num = m_label_id++;
+    node->operands[1].value = tag;
     append(node);
     m_label_stack.back()[tag] = node;
     return node;
 }
 
-void *List_Emitter::internal_label()
+void *List_Emitter::internal_label(const char *label_tag)
 {
     auto node = new Bytecode_List;
     node->is_label = true;
+    node->is_internal_label = true;
     node->operands[0].num = m_label_id;
+    node->operands[1].label_tag = label_tag;
     append(node);
     m_internal_labels[m_label_id] = node;
     m_label_id++;
@@ -352,7 +387,7 @@ void List_Emitter::close_push_handler_case(void *handler_case_id)
     }
     else
     {
-        destination = reinterpret_cast<Bytecode_List*>(internal_label());
+        destination = reinterpret_cast<Bytecode_List*>(internal_label(nullptr));
     }
     auto hc = reinterpret_cast<Bytecode_List*>(handler_case_id);
     hc->operands[1].destination = destination;
@@ -379,7 +414,7 @@ void List_Emitter::resolve_jump_to_current(void *branch_id)
     }
     else
     {
-        destination = reinterpret_cast<Bytecode_List*>(internal_label());
+        destination = reinterpret_cast<Bytecode_List*>(internal_label(nullptr));
     }
     auto br = reinterpret_cast<Bytecode_List*>(branch_id);
     br->operands[0].destination = destination;
@@ -388,10 +423,42 @@ void List_Emitter::resolve_jump_to_current(void *branch_id)
 void List_Emitter::backfill_label(void *branch_id, Value tag)
 {
     //auto offset = reinterpret_cast<intptr_t>(branch_id);
-    //assert(m_label_stack.size() != 0);
     //m_backfills.push_back({tag, static_cast<int32_t>(offset)});
+    assert(m_label_stack.size() != 0);
+    m_backfills.push_back({tag, reinterpret_cast<Bytecode_List*>(branch_id)});
 }
 
+void pp_label(std::ostream &out, Bytecode_List *bc)
+{
+    if (!bc)
+    {
+        out << "(nullptr)";
+        return;
+    }
+
+    if (!bc->is_internal_label)
+    {
+        out << "L" << bc->operands[0].num << ":" << std::setw(35) << ";; ";
+        auto obj_repr = repr(bc->operands[1].value);
+        const int n = 25;
+        if (obj_repr.size() < n) {
+            out << "  [" << obj_repr << "]";
+        }
+        else {
+            out << "  [" << obj_repr.substr(0, n-3) << "... ]";
+        }
+    }
+    // is_internal is true
+    else if (bc->operands[1].label_tag)
+    {
+        out << "L" << bc->operands[0].num << "_" << bc->operands[1].label_tag << ":";
+    }
+    // is_internal is true
+    else
+    {
+        out << "L" << bc->operands[0].num << ":";
+    }
+}
 
 void List_Emitter::pp()
 {
@@ -408,7 +475,7 @@ void List_Emitter::pp()
 
         if (cur->is_label)
         {
-            cout << "LABEL_" << cur->operands[0].num << ":";
+            pp_label(cout, cur);
         }
         else switch (opc)
         {
@@ -439,13 +506,14 @@ void List_Emitter::pp()
             {
                 auto dest = cur->operands[0].destination;
                 cout << name << " -> ";
-                if (dest && dest->is_label)
-                {
-                    cout << "LABEL_" << dest->operands[0].num << " @ ";
-                }
-                cout << setfill('0') << setw(8) << hex
-                     << reinterpret_cast<uintptr_t>(dest)
-                     << setfill(' ') << "  ";
+                pp_label(cout, dest);
+                //if (dest && dest->is_label)
+                //{
+                //    cout << "LABEL_" << dest->operands[0].num << " @ ";
+                //}
+                //cout << setfill('0') << setw(8) << hex
+                //     << reinterpret_cast<uintptr_t>(dest)
+                //     << setfill(' ') << "  ";
             } break;
             
             case Opcode::op_function_value:
@@ -518,7 +586,7 @@ void List_Emitter::do_tests()
     push_labels();
     emit_push_nil();
 
-    auto here = internal_label();
+    auto here = internal_label(nullptr);
     emit_push_fixnum_0();
     emit_push_fixnum_1();
     emit_jump(here);

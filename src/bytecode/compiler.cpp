@@ -11,6 +11,7 @@
 #include "compiler.hpp"
 #include "emitter.hpp"
 #include "bc_emitter.hpp"
+#include "list_emitter.hpp"
 
 namespace lisp
 {
@@ -184,8 +185,160 @@ void compile_body(bytecode::Emitter &e, Scope *scope, Value body, bool tail_posi
 }
 
 static
+void compile_function_le(bytecode::Emitter &e, Scope *scope, Value expr, bool macro, bool toplevel)
+{
+    auto name = second(expr);
+    auto lambda_list = macro ? third(expr) : second(expr);
+    auto body = macro ? cdddr(expr) : cddr(expr);
+
+    auto func_scope = scope->push_scope();
+    bytecode::List_Emitter function_emitter;
+    // Optionals are a little tricky because we allow for any expression to be the default value
+    // to an optional, this even means that a default value may refer to an earlier parameter eg:
+    //     (defun substring (string start &optional (end (length string))) ...)
+    // In this example, end has not only a default value but it's a call to a function using a
+    // local variable.
+    //
+    // We'll solve this by generating the equivalent to a bunch of SETQs for the defaults and
+    // storing the address of each one, then at runtime we'll figure out which one of these
+    // to jump to.
+    auto cur = lambda_list;
+    std::vector<const Symbol*> params;
+    bool has_optionals = false;
+    bool has_rest = false;
+    size_t optionals_start_at = 0;
+    while (!cur.is_nil())
+    {
+        auto sym = car(cur);
+        if (sym == g.s_aOPTIONAL)
+        {
+            cur = cdr(cur);
+            has_optionals = true;
+            break;
+        }
+        if (sym == g.s_aREST || sym == g.s_aBODY)
+        {
+            has_rest = true;
+            break;
+        }
+        optionals_start_at++;
+        if (!symbolp(sym))
+        {
+            GC_GUARD();
+            auto signal_args = gc.list(g.s_SIMPLE_ERROR,
+                                       gc.alloc_string("Non-symbol parameter in lambda list"),
+                                       sym);
+            GC_UNGUARD();
+            throw VM_State::Signal_Exception(signal_args);
+        }
+        params.push_back(sym.as_object()->symbol());
+        cur = cdr(cur);
+    }
+
+    for (auto const symbol : params)
+    {
+        func_scope->create_variable(symbol);
+    }
+
+    std::vector<void*> optional_offsets;
+    for (size_t i = 0; i < optionals_start_at; ++i)
+    {
+        optional_offsets.push_back(0);
+    }
+
+    if (has_optionals || has_rest)
+    {
+        // at this point cur is now pointing to optionals
+        while (!cur.is_nil())
+        {
+            auto param = first(cur);
+            if (param == g.s_aREST || param == g.s_aBODY)
+            {
+                param = second(cur);
+                cur = Value::nil();
+                has_rest = true;
+            }
+
+            optional_offsets.push_back(function_emitter.internal_label("optionals"));
+
+            if (param.is_cons())
+            {
+                auto symbol = first(param).as_object()->symbol();
+                func_scope->create_variable(symbol);
+                params.push_back(symbol);
+
+                compile(function_emitter, func_scope, second(param), false);
+                compile_set_value(function_emitter, func_scope, first(param));
+                function_emitter.emit_pop();
+            }
+            else
+            {
+                auto symbol = param.as_object()->symbol();
+                func_scope->create_variable(symbol);
+                params.push_back(symbol);
+
+                function_emitter.emit_push_nil();
+                compile_set_value(function_emitter, func_scope, param);
+                function_emitter.emit_pop();
+            }
+            cur = cdr(cur);
+        }
+    }
+    else
+    {
+        assert(optionals_start_at == params.size());
+    }
+
+    auto main_entry_offset = function_emitter.internal_label("entrypoint");
+    compile_body(function_emitter, func_scope, body, true);
+    function_emitter.emit_return();
+    //function_emitter.lock(); // the function MUST be locked before we can resolve captures or move bytecode.
+    std::vector<Function::Capture_Offset> capture_offsets;
+    for (auto const &cap : func_scope->capture_info())
+    {
+        capture_offsets.push_back({
+                cap.index,
+                cap.is_local,
+                cap.symbol->qualified_name()
+            });
+    }
+
+    //auto const *function = new Function(std::move(function_emitter.move_bytecode()),
+    //                                    std::move(optional_offsets),
+    //                                    std::move(params),
+    //                                    std::move(capture_offsets),
+    //                                    main_entry_offset,
+    //                                    optionals_start_at,
+    //                                    // using the max number of locals instead of the function's arity
+    //                                    // because we may inline immediate lambda calls which expand the
+    //                                    // number of local variables but not change the arity of the
+    //                                    // outer function.
+    //                                    func_scope->stack_space_needed(),
+    //                                    has_rest,
+    //                                    has_optionals);
+
+    if (macro)
+    {
+        //auto obj = gc.alloc_object_unmanaged<Closure>(function);
+        //g.macros[name.as_object()->symbol()] = obj;
+    }
+    else
+    {
+        //e.emit_instantiate_closure(function);
+    }
+    //bytecode::Debug_Info::track_function(function);
+    // We created it in this function, so needs to be deleted here.
+    std::cout << "List Emitter for: " << repr(expr) << "\n";
+    function_emitter.pp();
+    delete func_scope;
+}
+
+static
 void compile_function(bytecode::Emitter &e, Scope *scope, Value expr, bool macro, bool toplevel)
 {
+    {
+        compile_function_le(e, scope, expr, macro, toplevel);
+    }
     auto name = second(expr);
     auto lambda_list = macro ? third(expr) : second(expr);
     auto body = macro ? cdddr(expr) : cddr(expr);

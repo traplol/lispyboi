@@ -17,7 +17,6 @@ namespace lisp
 namespace bytecode
 {
 
-
 struct Bytecode_List
 {
     Bytecode_List()
@@ -25,18 +24,21 @@ struct Bytecode_List
         , next(nullptr)
         , opcode(Opcode::op_halt)
         , is_label(false)
+        , is_internal_label(false)
     {}
     Bytecode_List *prev;
     Bytecode_List *next;
 
     Opcode opcode;
     bool is_label;
+    bool is_internal_label;
     union
     {
         Value value;
         uint32_t num;
         const Function *function;
         Bytecode_List *destination;
+        const char *label_tag;
     } operands[3];
 };
 
@@ -110,7 +112,7 @@ class List_Emitter : public Emitter
     virtual void push_labels() override;
     virtual void pop_labels() override;
     virtual void *user_label(Value tag) override;
-    virtual void *internal_label() override;
+    virtual void *internal_label(const char *label_tag) override;
 
     virtual void resolve_jump(void *branch_id, void *destination) override;
     virtual void resolve_jump_to_current(void *branch_id) override;
@@ -118,10 +120,16 @@ class List_Emitter : public Emitter
     virtual void backfill_label(void *branch_id, Value tag) override;
 
     Bytecode_List *current() const;
-    void *get_label(Value tag);
 
   private:
     void append(Bytecode_List *node);
+    Bytecode_List *get_label(Value tag);
+
+    struct Backfill_Info
+    {
+        Value tag;
+        Bytecode_List *branch;
+    };
 
     Bytecode_List *m_head;
     Bytecode_List *m_current;
@@ -130,6 +138,7 @@ class List_Emitter : public Emitter
     using Label_Map = std::unordered_map<Value, Bytecode_List*>;
     std::vector<Label_Map> m_label_stack;
     std::unordered_map<int32_t, Bytecode_List*> m_internal_labels;
+    std::list<Backfill_Info> m_backfills;
 };
 
 }
