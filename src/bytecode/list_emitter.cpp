@@ -465,7 +465,7 @@ bool List_Emitter::label_to_offset(void *label, uint32_t &out_offset)
 
 void List_Emitter::finalize()
 {
-    //do_optimizations();
+    do_optimizations();
 
     convert_to_bytecode();
     
@@ -750,6 +750,20 @@ void List_Emitter::do_optimizations()
                     total_peephole_opts++;
                 }
             }
+
+            /* @TODO: Remove useless pop/get sequences
+             * Maybe want to create a set_X_pop instruction that combines
+             * set_X N and pop and then this optimization is much easier
+             *        set_local 2
+             *        pop
+             *        set_local 1
+             *        pop
+             *        get_local 2
+             *        get_local 1
+             * =>
+             *        set_local 2
+             *        set_local 1
+             */
 
             /*
              * Remove instances of a pop preceded by some form of push.

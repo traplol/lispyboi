@@ -359,7 +359,7 @@ Value GC::alloc_string(const std::string &str)
 
 
 static void set_global(compiler::Scope *scope, Value symbol_value, Value value);
-static void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope, bool print_disassembly = false);
+static void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope);
 
 struct Function_Initializer
 {
@@ -3616,7 +3616,7 @@ void trace_signal_exception(VM_State &vm, const VM_State::Signal_Exception &e)
 }
 
 static
-void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope, bool print_disassembly)
+void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope)
 {
     auto expanded = macro_expand_impl(expr, vm);
 
@@ -3628,12 +3628,6 @@ void compile_execute(VM_State &vm, Value expr, compiler::Scope &root_scope, bool
     g.resize_globals(compiler::THE_ROOT_SCOPE->locals().size());
 
     vm.push_frame(nullptr, 0);
-
-    if (print_disassembly)
-    {
-        e.pp("compile_execute:");
-        bytecode::disassemble(std::cout, "DISASM", e.bytecode());
-    }
 
     vm.execute(e.bytecode().data());
 
@@ -3713,7 +3707,7 @@ bool eval_file(VM_State &vm, compiler::Scope &root_scope, const std::filesystem:
     }
 }
 
-void run_repl(VM_State &vm, compiler::Scope &root_scope, bool disassemble)
+void run_repl(VM_State &vm, compiler::Scope &root_scope)
 {
     fprintf(stdout, "lispyboi v0.1\n");
     fprintf(stdout, "    Debug level: " STR(DEBUG) "\n");
@@ -3768,7 +3762,7 @@ void run_repl(VM_State &vm, compiler::Scope &root_scope, bool disassemble)
             auto out_handle = gc.pin_value(out);
             try
             {
-                compile_execute(vm, out, root_scope, disassemble);
+                compile_execute(vm, out, root_scope);
                 gc.unpin_value(out_handle);
             }
             catch (VM_State::Signal_Exception e)
@@ -3806,7 +3800,7 @@ int main(int argc, char **argv)
     bool use_boot = true;
     bool repl = false;
     bool list_emitter_tests = false;
-    bool disassemble = false;
+    bool debugger = false;
     char *file = nullptr;
 
     int i = 1;
@@ -3832,7 +3826,7 @@ int main(int argc, char **argv)
             }
             else if (strcmp("-d", argv[i]) == 0)
             {
-                disassemble = true;
+                debugger = true;
             }
             else if (strcmp("-", argv[i]) == 0)
             {
@@ -3869,6 +3863,9 @@ int main(int argc, char **argv)
 
     gc.set_paused(false);
 
+    g.debugger.breaking = debugger;
+    g.debugger.command = Runtime_Globals::Debugger::Command::Step_Into;
+
     if (use_boot)
     {
         auto exe_dir = plat::get_executable_path().parent_path();
@@ -3881,9 +3878,12 @@ int main(int argc, char **argv)
         eval_file(*vm, *compiler::THE_ROOT_SCOPE, file);
     }
 
+    std::cout << std::dec << "Peephole optimizer modifications: "
+              << lisp::bytecode::total_peephole_opts << "\n";
+
     if (repl)
     {
-        run_repl(*vm, *compiler::THE_ROOT_SCOPE, disassemble);
+        run_repl(*vm, *compiler::THE_ROOT_SCOPE);
     }
 
 #if PROFILE_OPCODE_PAIRS
