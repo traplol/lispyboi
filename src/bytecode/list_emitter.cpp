@@ -649,8 +649,8 @@ void List_Emitter::do_optimizations()
     size_t unlinked_count = 0;
     std::vector<Bytecode_List*> unlinked;
 
-    std::cout << "Peephole optimization pass #0\n";
-    pp("");
+    //std::cout << "Peephole optimization pass #0\n";
+    //pp("");
     for (int i = 0; i < 10; ++i)
     {
         auto cur_insn = head();
@@ -802,14 +802,17 @@ void List_Emitter::do_optimizations()
                 auto nex = next_insn;
                 while (nex && nex->opcode == opcode && nex->operands[0].num == idx)
                 {
-                    auto insn = new Bytecode_List;
-                    insn->opcode = Opcode::op_dup;
-                    link(cur_insn, insn);
-                    unlinked.push_back(unlink(nex));
+                    //auto insn = new Bytecode_List;
+                    //insn->opcode = Opcode::op_dup;
+                    //link(cur_insn, insn);
+                    //unlinked.push_back(unlink(nex));
+                    nex->opcode = Opcode::op_dup;
                     nex = next(nex);
+                    total_unlinked_insns++;
                 }
                 cur_insn = nex;
-                continue;
+                next_insn = next(cur_insn);
+                prev_insn = prev(cur_insn);
             }
             #endif
 
@@ -855,8 +858,8 @@ void List_Emitter::do_optimizations()
             cur_insn = next_insn;
         }
 
-        std::cout << "Peephole optimization pass #" << i+1 << "\n";
-        pp("");
+        //std::cout << "Peephole optimization pass #" << i+1 << "\n";
+        //pp("");
 
         if (unlinked.size() == unlinked_count)
             break; // no optimizations happened, just leave
@@ -867,8 +870,8 @@ void List_Emitter::do_optimizations()
     {
         delete p;
     }
-    std::cout << std::dec;
-    std::cout << "Peephole removed " << total_unlinked_insns << " instructions.\n";
+    //std::cout << std::dec;
+    //std::cout << "Peephole removed " << total_unlinked_insns << " instructions.\n";
 }
 
 static void pp_label(std::ostream &out, Bytecode_List *bc);
