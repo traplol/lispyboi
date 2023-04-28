@@ -26,7 +26,7 @@ debug1: _debug
 _debug: CFLAGS += -g3
 _debug: lispyboi
 
-release: CFLAGS += -O3 -DDEBUG=0 -flto
+release: CFLAGS += -O3 -DDEBUG=0 -DUSE_TAILCALLS=0 -DUSE_COMPUTED_GOTOS=1
 release: lispyboi
 
 tailcalls_debug: CFLAGS += -O1 -DDEBUG=1
@@ -35,7 +35,7 @@ tailcalls_debug: CFLAGS += -DUSE_TAILCALLS=1 -DUSE_COMPUTED_GOTOS=0
 #tailcalls_debug: LDFLAGS += -fprofile-instr-generate
 tailcalls_debug: _debug
 
-tailcalls: CFLAGS += -O3 -g3 -DDEBUG=0 -DUSE_TAILCALLS=1 -DUSE_COMPUTED_GOTOS=0 -flto
+tailcalls: CFLAGS += -O3 -DDEBUG=0 -DUSE_TAILCALLS=1 -DUSE_COMPUTED_GOTOS=0
 tailcalls: lispyboi
 
 lispyboi: $(OBJECTS)
