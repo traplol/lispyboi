@@ -498,13 +498,6 @@ Bytecode_List *List_Emitter::next(Bytecode_List *e)
         return nullptr;
 
     return e->next;
-    
-    //e = e->next;
-    //while (e && e->is_label)
-    //{
-    //    e = e->next;
-    //}
-    //return e;
 }
 
 Bytecode_List *List_Emitter::prev(Bytecode_List *e)
@@ -513,13 +506,6 @@ Bytecode_List *List_Emitter::prev(Bytecode_List *e)
         return nullptr;
 
     return e->prev;
-    
-    //e = e->prev;
-    //while (e && e->is_label)
-    //{
-    //    e = e->prev;
-    //}
-    //return e;
 }
 
 Bytecode_List *List_Emitter::unlink(Bytecode_List *e)
@@ -802,10 +788,6 @@ void List_Emitter::do_optimizations()
                 auto nex = next_insn;
                 while (nex && nex->opcode == opcode && nex->operands[0].num == idx)
                 {
-                    //auto insn = new Bytecode_List;
-                    //insn->opcode = Opcode::op_dup;
-                    //link(cur_insn, insn);
-                    //unlinked.push_back(unlink(nex));
                     nex->opcode = Opcode::op_dup;
                     nex = next(nex);
                     total_unlinked_insns++;
