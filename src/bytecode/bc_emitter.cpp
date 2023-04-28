@@ -269,6 +269,11 @@ void BC_Emitter::emit_sub_1()
     append(Opcode::op_sub_1);
 }
 
+void BC_Emitter::emit_dup()
+{
+    append(Opcode::op_dup);
+}
+
 void BC_Emitter::emit_debug_trap()
 {
     append(Opcode::op_debug_trap);

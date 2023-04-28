@@ -6,6 +6,11 @@
 #include "list_emitter.hpp"
 #include "bc_emitter.hpp"
 
+#define OPT_FOLD_CONSTANT_ADDS 1
+#define OPT_FOLD_CONSTANT_SUBS 1
+#define OPT_REMOVE_NOOP_PUSH_POPS 1
+#define OPT_CONVERT_GET_SEQUENCES_TO_DUPS 1
+
 using namespace lisp;
 using namespace lisp::bytecode;
 
@@ -14,13 +19,13 @@ void List_Emitter::append(Bytecode_List *node)
     if (m_head == nullptr)
     {
         m_head = node;
-        m_current = m_head;
+        m_tail = m_head;
     }
     else if (node != nullptr)
     {
-        m_current->next = node;
-        node->prev = m_current;
-        m_current = node;
+        m_tail->next = node;
+        node->prev = m_tail;
+        m_tail = node;
     }
 }
 
@@ -245,6 +250,12 @@ void List_Emitter::emit_sub_1()
     node->opcode = Opcode::op_sub_1;
     append(node);
 }
+void List_Emitter::emit_dup()
+{
+    auto node = new Bytecode_List;
+    node->opcode = Opcode::op_dup;
+    append(node);
+}
 void List_Emitter::emit_debug_trap()
 {
     auto node = new Bytecode_List;
@@ -398,7 +409,7 @@ void List_Emitter::close_push_handler_case(void *handler_case_id)
 
 Bytecode_List *List_Emitter::current() const
 {
-    return m_current;
+    return m_tail;
 }
 
 void List_Emitter::resolve_jump(void *branch_id, void *destination)
@@ -471,8 +482,391 @@ Emitter *List_Emitter::of_same_type() const
     return new List_Emitter;
 }
 
+Bytecode_List *List_Emitter::head()
+{
+    auto cur = m_head;
+    while (cur && cur->is_label)
+    {
+        cur = cur->next;
+    }
+    return cur;
+}
+
+Bytecode_List *List_Emitter::next(Bytecode_List *e)
+{
+    if (!e)
+        return nullptr;
+
+    return e->next;
+    
+    //e = e->next;
+    //while (e && e->is_label)
+    //{
+    //    e = e->next;
+    //}
+    //return e;
+}
+
+Bytecode_List *List_Emitter::prev(Bytecode_List *e)
+{
+    if (!e)
+        return nullptr;
+
+    return e->prev;
+    
+    //e = e->prev;
+    //while (e && e->is_label)
+    //{
+    //    e = e->prev;
+    //}
+    //return e;
+}
+
+Bytecode_List *List_Emitter::unlink(Bytecode_List *e)
+{
+    if (!e)
+        return nullptr;
+
+    if (e == m_head)
+    {
+        m_head = e->next;
+        if (m_head)
+            m_head->prev = nullptr;
+    }
+    if (e == m_tail)
+    {
+        m_tail = e->prev;
+        if (m_tail)
+            m_tail->next = nullptr;
+    }
+    else
+    {
+        // Notice that we do NOT set e->prev nor e->next so that calling prev(e) or next(e) will still work!
+        if (e->prev)
+            e->prev->next = e->next;
+
+        if (e->next)
+            e->next->prev = e->prev;
+
+    }
+    return e;
+}
+
+void List_Emitter::link(Bytecode_List *after, Bytecode_List *e)
+{
+    if (!after || !e)
+        return;
+
+    auto tmp = after->next;
+    after->next = e;
+    e->prev = after;
+
+    auto tail = e;
+    while (tail->next)
+        tail = tail->next;
+
+    tail->next = tmp;
+    if (tmp)
+        tmp->prev = tail;
+}
+
+static
+bool is_push_insn(Bytecode_List *e)
+{
+    if (!e)
+        return false;
+
+    switch (e->opcode)
+    {
+        default:
+            return false;
+
+        case Opcode::op_push_value:
+            return true;
+    }
+}
+
+static
+bool is_labeled(Bytecode_List *e)
+{
+    return e && e->prev && e->prev->is_label;
+}
+
+static
+bool is_push_const_fixnum(Bytecode_List *e, Value &out_fixnum)
+{
+    if (!e)
+        return false;
+
+    if (e->opcode == Opcode::op_push_fixnum_0)
+    {
+        out_fixnum = Value::wrap_fixnum(0);
+        return true;
+    }
+    if (e->opcode == Opcode::op_push_fixnum_1)
+    {
+        out_fixnum = Value::wrap_fixnum(1);
+        return true;
+    }
+    if (e->opcode == Opcode::op_push_value)
+    {
+        out_fixnum = e->operands[0].value;
+        return e->operands[0].value.is_fixnum();
+    }
+
+    return false;
+}
+
+static
+bool is_push_constant(Bytecode_List *e, Value &out_value)
+{
+    if (!e)
+        return false;
+
+    if (e->opcode == Opcode::op_push_fixnum_0)
+    {
+        out_value = Value::wrap_fixnum(0);
+        return true;
+    }
+    if (e->opcode == Opcode::op_push_fixnum_1)
+    {
+        out_value = Value::wrap_fixnum(1);
+        return true;
+    }
+    if (e->opcode == Opcode::op_push_value)
+    {
+        out_value = e->operands[0].value;
+        return true;
+    }
+
+    return false;
+}
+
 void List_Emitter::do_optimizations()
 {
+    static int total_unlinked_insns = 0;
+
+    size_t unlinked_count = 0;
+    std::vector<Bytecode_List*> unlinked;
+
+    //std::cout << "Peephole optimization pass #0\n";
+    //pp("");
+    for (int i = 0; i < 10; ++i)
+    {
+        auto cur_insn = head();
+        while (cur_insn)
+        {
+            auto prev_insn = prev(cur_insn);
+            auto next_insn = next(cur_insn);
+
+            /*
+             * Remove instances of a pop preceded by some form of push.
+             * e.g.
+             *          push_value [5]
+             *          pop
+             *
+             *          get_local [3]
+             *          pop
+             */
+            #if OPT_REMOVE_NOOP_PUSH_POPS
+            if (cur_insn->opcode == Opcode::op_pop)
+            {
+                if (is_push_insn(prev_insn))
+                {
+                    unlinked.push_back(unlink(prev_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+            }
+            #endif
+
+            /*
+             * Fold constants using op_add 
+             * e.g.
+             *          push_value [5]
+             *          push_value [10]
+             *          add
+             *
+             * to:      push_value [15]
+             */
+            #if OPT_FOLD_CONSTANT_ADDS
+            if (cur_insn->opcode == Opcode::op_add)
+            {
+                auto b_insn = prev_insn;
+                auto a_insn = prev(prev_insn);
+                Value a, b;
+                bool a_is_fixnum = is_push_const_fixnum(a_insn, a);
+                bool b_is_fixnum = is_push_const_fixnum(b_insn, b);
+                if (a_is_fixnum && b_is_fixnum)
+                {
+                    auto insn = new Bytecode_List;
+                    insn->opcode = Opcode::op_push_value;
+                    insn->operands[0].value = a + b;
+                    link(cur_insn, insn);
+
+                    unlinked.push_back(unlink(b_insn));
+                    unlinked.push_back(unlink(a_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+                else if (a_is_fixnum && a == Value::wrap_fixnum(1))
+                {
+                    auto insn = new Bytecode_List;
+                    insn->opcode = Opcode::op_add_1;
+                    link(cur_insn, insn);
+
+                    unlinked.push_back(unlink(a_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+                else if (b_is_fixnum && b == Value::wrap_fixnum(1))
+                {
+                    auto insn = new Bytecode_List;
+                    insn->opcode = Opcode::op_add_1;
+                    link(cur_insn, insn);
+
+                    unlinked.push_back(unlink(b_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+                else if (a_is_fixnum && a == Value::wrap_fixnum(0))
+                {
+                    unlinked.push_back(unlink(a_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+                else if (b_is_fixnum && b == Value::wrap_fixnum(0))
+                {
+                    unlinked.push_back(unlink(b_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+            }
+            #endif
+            /*
+             * Fold constants using op_sub 
+             * e.g.
+             *          push_value [5]
+             *          push_value [10]
+             *          sub
+             *
+             * to:      push_value [15]
+             */
+            #if OPT_FOLD_CONSTANT_SUBS
+            if (cur_insn->opcode == Opcode::op_sub)
+            {
+                auto b_insn = prev_insn;
+                auto a_insn = prev(prev_insn);
+                Value a, b;
+                bool a_is_fixnum = is_push_const_fixnum(a_insn, a);
+                bool b_is_fixnum = is_push_const_fixnum(b_insn, b);
+                if (a_is_fixnum && b_is_fixnum)
+                {
+                    auto insn = new Bytecode_List;
+                    insn->opcode = Opcode::op_push_value;
+                    insn->operands[0].value = a - b;
+                    link(cur_insn, insn);
+
+                    unlinked.push_back(unlink(b_insn));
+                    unlinked.push_back(unlink(a_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+                else if (b_is_fixnum && b == Value::wrap_fixnum(1))
+                {
+                    auto insn = new Bytecode_List;
+                    insn->opcode = Opcode::op_sub_1;
+                    link(cur_insn, insn);
+
+                    unlinked.push_back(unlink(b_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+                else if (b_is_fixnum && b == Value::wrap_fixnum(0))
+                {
+                    unlinked.push_back(unlink(b_insn));
+                    unlinked.push_back(unlink(cur_insn));
+                }
+            }
+            #endif
+
+            /* Convert sequences of get_X'ing the same thing into dup instructions
+             * e.g.
+             *            get_local 0
+             *            get_local 0
+             *            get_local 0
+             * to:
+             *            get_local 0
+             *            dup
+             *            dup
+             */
+            #if OPT_CONVERT_GET_SEQUENCES_TO_DUPS
+            if (cur_insn->opcode == Opcode::op_get_local ||
+                cur_insn->opcode == Opcode::op_get_global ||
+                cur_insn->opcode == Opcode::op_get_capture)
+            {
+                auto opcode = cur_insn->opcode;
+                auto idx = cur_insn->operands[0].num;
+                auto nex = next_insn;
+                while (nex && nex->opcode == opcode && nex->operands[0].num == idx)
+                {
+                    auto insn = new Bytecode_List;
+                    insn->opcode = Opcode::op_dup;
+                    link(cur_insn, insn);
+                    unlinked.push_back(unlink(nex));
+                    nex = next(nex);
+                }
+            }
+            #endif
+
+            /*
+             * Remove instances of jump instructions that directly to the next instruction
+             * This should rarely ever be generated but may be a result of another
+             * optimization.
+             */
+            if (cur_insn->opcode == Opcode::op_jump)
+            {
+                if (cur_insn->operands[0].destination == next_insn)
+                {
+                    unlinked.push_back(unlink(cur_insn));
+                }
+            }
+
+            /*
+             * Condense conditional branches with constants
+             */
+            if (cur_insn->opcode == Opcode::op_pop_jump_if_nil)
+            {
+                Value condition;
+                if (is_push_constant(prev_insn, condition))
+                {
+                    if (condition == Value::nil())
+                    {
+                        auto dest = cur_insn->operands[0].destination;
+                        auto cur = prev_insn;
+                        while (cur && cur != dest)
+                        {
+                            unlinked.push_back(unlink(cur));
+                            cur = cur->next;
+                        }
+                        cur_insn = dest;
+                        continue;
+                    }
+                    else
+                    {
+                    }
+                }
+            }
+
+            cur_insn = next_insn;
+        }
+
+        //std::cout << "Peephole optimization pass #" << i+1 << "\n";
+        //pp("");
+
+        if (unlinked.size() == unlinked_count)
+            break; // no optimizations happened, just leave
+        unlinked_count = unlinked.size();
+    }
+    total_unlinked_insns += unlinked.size();
+    for (auto *p : unlinked)
+    {
+        delete p;
+    }
+    //std::cout << std::dec;
+    //std::cout << "Peephole removed " << total_unlinked_insns << " instructions.\n";
 }
 
 static void pp_label(std::ostream &out, Bytecode_List *bc);
@@ -592,6 +986,9 @@ void List_Emitter::convert_to_bytecode()
             case Opcode::op_sub_1:
                 e.emit_sub_1();
                 break;
+            case Opcode::op_dup:
+                e.emit_dup();
+                break;
         }
         cur = cur->next;
     }
@@ -674,8 +1071,6 @@ void List_Emitter::pp(const char *tag)
         }
         else switch (opc)
         {
-            default: cout << "pp not implemented for op_" << name; break;
-
             case Opcode::op_get_global:
             case Opcode::op_set_global:
 
@@ -767,6 +1162,7 @@ void List_Emitter::pp(const char *tag)
             case Opcode::op_add_1:
             case Opcode::op_sub:
             case Opcode::op_sub_1:
+            case Opcode::op_dup:
             {
                 cout << name;
             } break;

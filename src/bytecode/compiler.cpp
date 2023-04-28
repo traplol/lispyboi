@@ -700,46 +700,54 @@ void compile(bytecode::Emitter &e, Scope *scope, Value expr, bool toplevel, bool
             {
                 auto a = second(expr);
                 auto b = third(expr);
-                if (a.is_fixnum() && b.is_fixnum())
-                {
-                    e.emit_push_value(a + b);
-                }
-                else if (a == Value::wrap_fixnum(1))
-                {
-                    compile(e, scope, b, toplevel);
-                    e.emit_add_1();
-                }
-                else if (b == Value::wrap_fixnum(1))
-                {
-                    compile(e, scope, a, toplevel);
-                    e.emit_add_1();
-                }
-                else
-                {
-                    compile(e, scope, a, toplevel);
-                    compile(e, scope, b, toplevel);
-                    e.emit_add();
-                }
+                compile(e, scope, a, toplevel);
+                compile(e, scope, b, toplevel);
+                e.emit_add();
+
+                //if (a.is_fixnum() && b.is_fixnum())
+                //{
+                //    e.emit_push_value(a + b);
+                //}
+                //else if (a == Value::wrap_fixnum(1))
+                //{
+                //    compile(e, scope, b, toplevel);
+                //    e.emit_add_1();
+                //}
+                //else if (b == Value::wrap_fixnum(1))
+                //{
+                //    compile(e, scope, a, toplevel);
+                //    e.emit_add_1();
+                //}
+                //else
+                //{
+                //  compile(e, scope, a, toplevel);
+                //  compile(e, scope, b, toplevel);
+                //  e.emit_add();
+                //}
             }
             else if (thing == g.s_pminus && length(expr) == 3) // sub a, b
             {
                 auto a = second(expr);
                 auto b = third(expr);
-                if (a.is_fixnum() && b.is_fixnum())
-                {
-                    e.emit_push_value(a - b);
-                }
-                else if (b == Value::wrap_fixnum(1))
-                {
-                    compile(e, scope, a, toplevel);
-                    e.emit_sub_1();
-                }
-                else
-                {
-                    compile(e, scope, a, toplevel);
-                    compile(e, scope, b, toplevel);
-                    e.emit_sub();
-                }
+                compile(e, scope, a, toplevel);
+                compile(e, scope, b, toplevel);
+                e.emit_sub();
+
+                //if (a.is_fixnum() && b.is_fixnum())
+                //{
+                //    e.emit_push_value(a - b);
+                //}
+                //else if (b == Value::wrap_fixnum(1))
+                //{
+                //    compile(e, scope, a, toplevel);
+                //    e.emit_sub_1();
+                //}
+                //else
+                //{
+                //    compile(e, scope, a, toplevel);
+                //    compile(e, scope, b, toplevel);
+                //    e.emit_sub();
+                //}
             }
             else
             {

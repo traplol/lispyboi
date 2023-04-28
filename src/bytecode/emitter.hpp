@@ -60,6 +60,7 @@ class Emitter
     virtual void emit_add_1() = 0;
     virtual void emit_sub() = 0;
     virtual void emit_sub_1() = 0;
+    virtual void emit_dup() = 0;
 
     virtual void emit_debug_trap() = 0;
 

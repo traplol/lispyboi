@@ -69,6 +69,7 @@ class BC_Emitter : public Emitter
     virtual void emit_add_1() override;
     virtual void emit_sub() override;
     virtual void emit_sub_1() override;
+    virtual void emit_dup() override;
 
     virtual void emit_debug_trap() override;
 

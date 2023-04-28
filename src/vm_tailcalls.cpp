@@ -834,6 +834,13 @@ OPCODE(sub_1)
     }
 }
 
+OPCODE(dup)
+{
+    vm.push_param(vm.param_top());
+    ip += 1;
+    DISPATCH_NEXT;
+}
+
 OPCODE(raise_signal)
 {
     // @Design, should we move the tag to be the first thing pushed since this just gets

@@ -330,4 +330,10 @@ BYTECODE_DEF(sub_1,
 1, // size
 "Subtract 1 from the top of the P-stack")
 
+BYTECODE_DEF(dup,
+0, // noperands
+0, // nargs
+1, // size
+"Duplicate the top of the P-stack")
+
 #undef BYTECODE_DEF

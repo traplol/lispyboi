@@ -875,6 +875,13 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                 ip += 1;
                 DISPATCH_NEXT;
             }
+
+            DISPATCH(dup)
+            {
+                push_param(param_top());
+                ip += 1;
+                DISPATCH_NEXT;
+            }
         }
     }
     done:

@@ -49,7 +49,7 @@ class List_Emitter : public Emitter
     List_Emitter()
         : m_finalized(false)
         , m_head(nullptr)
-        , m_current(nullptr)
+        , m_tail(nullptr)
         , m_label_id(0)
     {}
 
@@ -104,6 +104,7 @@ class List_Emitter : public Emitter
     virtual void emit_add_1() override;
     virtual void emit_sub() override;
     virtual void emit_sub_1() override;
+    virtual void emit_dup() override;
 
     virtual void emit_debug_trap() override;
 
@@ -136,6 +137,12 @@ class List_Emitter : public Emitter
     void do_optimizations();
     void convert_to_bytecode();
 
+    Bytecode_List *head();
+    Bytecode_List *next(Bytecode_List *e);
+    Bytecode_List *prev(Bytecode_List *e);
+    Bytecode_List *unlink(Bytecode_List *e);
+    void link(Bytecode_List *after, Bytecode_List *e);
+
     struct Backfill_Info
     {
         Value tag;
@@ -144,7 +151,7 @@ class List_Emitter : public Emitter
 
     bool m_finalized;
     Bytecode_List *m_head;
-    Bytecode_List *m_current;
+    Bytecode_List *m_tail;
     int32_t m_label_id;
 
     using Label_Map = std::unordered_map<Value, Bytecode_List*>;
