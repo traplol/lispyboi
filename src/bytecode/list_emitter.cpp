@@ -32,8 +32,15 @@ void List_Emitter::append(Bytecode_List *node)
 void List_Emitter::emit_push_value(Value value)
 {
     auto node = new Bytecode_List;
-    node->opcode = Opcode::op_push_value;
-    node->operands[0].value = value;
+    if (value.is_nil())
+    {
+        node->opcode = Opcode::op_push_nil;
+    }
+    else
+    {
+        node->opcode = Opcode::op_push_value;
+        node->operands[0].value = value;
+    }
     append(node);
 }
 
@@ -458,7 +465,7 @@ bool List_Emitter::label_to_offset(void *label, uint32_t &out_offset)
 
 void List_Emitter::finalize()
 {
-    do_optimizations();
+    //do_optimizations();
 
     convert_to_bytecode();
     
@@ -628,11 +635,36 @@ bool is_push_constant(Bytecode_List *e, Value &out_value)
     return false;
 }
 
+static
+Bytecode_List *dest_insn(Bytecode_List *br)
+{
+    if (!br)
+        return nullptr;
+
+    Bytecode_List *dest = nullptr;
+    
+    if (br->opcode == Opcode::op_jump
+        || br->opcode == Opcode::op_pop_jump_if_nil)
+    {
+        dest = br->operands[0].destination;
+    }
+    else if (br->opcode == Opcode::op_push_handler_case)
+    {
+        dest = br->operands[1].destination;
+    }
+
+    while (dest && dest->is_label)
+        dest = dest->next;
+
+    return dest;
+}
+
+int lisp::bytecode::total_peephole_opts = 0;
+
 void List_Emitter::do_optimizations()
 {
-    static int total_unlinked_insns = 0;
-
     size_t unlinked_count = 0;
+#define UNLINK(x) unlinked.push_back(unlink(x))
     std::vector<Bytecode_List*> unlinked;
 
     //std::cout << "Peephole optimization pass #0\n";
@@ -646,33 +678,106 @@ void List_Emitter::do_optimizations()
             auto next_insn = next(cur_insn);
 
             /*
+             * useless jump elimination
+             *        jump LABEL
+             *    LABEL:
+             * =>
+             *    LABEL:
+             */
+            if (cur_insn->opcode == Opcode::op_jump)
+            {
+                if (cur_insn->operands[0].destination == next_insn)
+                {
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
+                }
+            }
+
+            /*
+             * useless jump elimination
+             *        jump LABEL1
+             *        ...
+             *    LABEL1:
+             *        jump LABEL2
+             *    
+             *    => in this case, first jump instruction should jump to
+             *       LABEL2 directly
+             */
+            if (cur_insn->opcode == Opcode::op_jump)
+            {
+                auto dest = dest_insn(cur_insn);
+                if (dest && dest->opcode == Opcode::op_jump)
+                {
+                    cur_insn->operands[0].destination = dest->operands[0].destination;
+                    total_peephole_opts++;
+                }
+            }
+
+            /*
+             * useless jump elimination
+             *        jump LABEL
+             *        ...
+             *    LABEL:
+             *        return
+             * =>
+             *        return
+             *        ...
+             *    LABEL:
+             *        return
+             */
+            if (cur_insn->opcode == Opcode::op_jump)
+            {
+                auto dest = dest_insn(cur_insn);
+                if (dest && dest->opcode == Opcode::op_return)
+                {
+                    cur_insn->opcode = Opcode::op_return;
+                    total_peephole_opts++;
+                }
+            }
+
+            /*
+             * useless return elimination
+             *        gotocall 5
+             *        return
+             * =>
+             *        gotocall 5
+             */
+            if (cur_insn->opcode == Opcode::op_gotocall)
+            {
+                if (next_insn && next_insn->opcode == Opcode::op_return)
+                {
+                    UNLINK(cur_insn->next);
+                    total_peephole_opts++;
+                }
+            }
+
+            /*
              * Remove instances of a pop preceded by some form of push.
-             * e.g.
-             *          push_value [5]
-             *          pop
-             *
-             *          get_local [3]
-             *          pop
+             *        push_value [5]
+             *        pop
+             * =>
+             *        get_local [3]
+             *        pop
              */
             #if OPT_REMOVE_NOOP_PUSH_POPS
             if (cur_insn->opcode == Opcode::op_pop)
             {
                 if (is_push_insn(prev_insn))
                 {
-                    unlinked.push_back(unlink(prev_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(prev_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
             }
             #endif
 
             /*
              * Fold constants using op_add 
-             * e.g.
-             *          push_value [5]
-             *          push_value [10]
-             *          add
-             *
-             * to:      push_value [15]
+             *        push_value [5]
+             *        push_value [10]
+             *        add
+             * =>
+             *        push_value [15]
              */
             #if OPT_FOLD_CONSTANT_ADDS
             if (cur_insn->opcode == Opcode::op_add)
@@ -689,9 +794,10 @@ void List_Emitter::do_optimizations()
                     insn->operands[0].value = a + b;
                     link(cur_insn, insn);
 
-                    unlinked.push_back(unlink(b_insn));
-                    unlinked.push_back(unlink(a_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(b_insn);
+                    UNLINK(a_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
                 else if (a_is_fixnum && a == Value::wrap_fixnum(1))
                 {
@@ -699,8 +805,9 @@ void List_Emitter::do_optimizations()
                     insn->opcode = Opcode::op_add_1;
                     link(cur_insn, insn);
 
-                    unlinked.push_back(unlink(a_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(a_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
                 else if (b_is_fixnum && b == Value::wrap_fixnum(1))
                 {
@@ -708,29 +815,31 @@ void List_Emitter::do_optimizations()
                     insn->opcode = Opcode::op_add_1;
                     link(cur_insn, insn);
 
-                    unlinked.push_back(unlink(b_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(b_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
                 else if (a_is_fixnum && a == Value::wrap_fixnum(0))
                 {
-                    unlinked.push_back(unlink(a_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(a_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
                 else if (b_is_fixnum && b == Value::wrap_fixnum(0))
                 {
-                    unlinked.push_back(unlink(b_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(b_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
             }
             #endif
             /*
              * Fold constants using op_sub 
-             * e.g.
-             *          push_value [5]
-             *          push_value [10]
-             *          sub
-             *
-             * to:      push_value [15]
+             *        push_value [5]
+             *        push_value [10]
+             *        sub
+             * =>
+             *        push_value [15]
              */
             #if OPT_FOLD_CONSTANT_SUBS
             if (cur_insn->opcode == Opcode::op_sub)
@@ -747,9 +856,10 @@ void List_Emitter::do_optimizations()
                     insn->operands[0].value = a - b;
                     link(cur_insn, insn);
 
-                    unlinked.push_back(unlink(b_insn));
-                    unlinked.push_back(unlink(a_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(b_insn);
+                    UNLINK(a_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
                 else if (b_is_fixnum && b == Value::wrap_fixnum(1))
                 {
@@ -757,26 +867,27 @@ void List_Emitter::do_optimizations()
                     insn->opcode = Opcode::op_sub_1;
                     link(cur_insn, insn);
 
-                    unlinked.push_back(unlink(b_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(b_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
                 else if (b_is_fixnum && b == Value::wrap_fixnum(0))
                 {
-                    unlinked.push_back(unlink(b_insn));
-                    unlinked.push_back(unlink(cur_insn));
+                    UNLINK(b_insn);
+                    UNLINK(cur_insn);
+                    total_peephole_opts++;
                 }
             }
             #endif
 
             /* Convert sequences of get_X'ing the same thing into dup instructions
-             * e.g.
-             *            get_local 0
-             *            get_local 0
-             *            get_local 0
-             * to:
-             *            get_local 0
-             *            dup
-             *            dup
+             *        get_local 0
+             *        get_local 0
+             *        get_local 0
+             * =>
+             *        get_local 0
+             *        dup
+             *        dup
              */
             #if OPT_CONVERT_GET_SEQUENCES_TO_DUPS
             if (cur_insn->opcode == Opcode::op_get_local ||
@@ -790,52 +901,10 @@ void List_Emitter::do_optimizations()
                 {
                     nex->opcode = Opcode::op_dup;
                     nex = next(nex);
-                    total_unlinked_insns++;
+                    total_peephole_opts++;
                 }
-                cur_insn = nex;
-                next_insn = next(cur_insn);
-                prev_insn = prev(cur_insn);
             }
             #endif
-
-            /*
-             * Remove instances of jump instructions that directly to the next instruction
-             * This should rarely ever be generated but may be a result of another
-             * optimization.
-             */
-            if (cur_insn->opcode == Opcode::op_jump)
-            {
-                if (cur_insn->operands[0].destination == next_insn)
-                {
-                    unlinked.push_back(unlink(cur_insn));
-                }
-            }
-
-            /*
-             * Condense conditional branches with constants
-             */
-            if (cur_insn->opcode == Opcode::op_pop_jump_if_nil)
-            {
-                Value condition;
-                if (is_push_constant(prev_insn, condition))
-                {
-                    if (condition == Value::nil())
-                    {
-                        auto dest = cur_insn->operands[0].destination;
-                        auto cur = prev_insn;
-                        while (cur && cur != dest)
-                        {
-                            unlinked.push_back(unlink(cur));
-                            cur = cur->next;
-                        }
-                        cur_insn = dest;
-                        continue;
-                    }
-                    else
-                    {
-                    }
-                }
-            }
 
             cur_insn = next_insn;
         }
@@ -847,7 +916,6 @@ void List_Emitter::do_optimizations()
             break; // no optimizations happened, just leave
         unlinked_count = unlinked.size();
     }
-    total_unlinked_insns += unlinked.size();
     for (auto *p : unlinked)
     {
         delete p;
@@ -1084,13 +1152,9 @@ void List_Emitter::pp(const char *tag)
                 auto dest = cur->operands[0].destination;
                 cout << name << " -> ";
                 pp_label(cout, dest);
-                //if (dest && dest->is_label)
-                //{
-                //    cout << "LABEL_" << dest->operands[0].num << " @ ";
-                //}
-                //cout << setfill('0') << setw(8) << hex
-                //     << reinterpret_cast<uintptr_t>(dest)
-                //     << setfill(' ') << "  ";
+                cout << " @ " << setfill('0') << setw(8) << hex
+                     << reinterpret_cast<uintptr_t>(dest)
+                     << setfill(' ') << "  ";
             } break;
             
             case Opcode::op_function_value:

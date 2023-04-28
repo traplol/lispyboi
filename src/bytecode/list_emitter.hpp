@@ -162,6 +162,8 @@ class List_Emitter : public Emitter
     std::unordered_map<void*, uint32_t> m_final_label_offset_map;
 };
 
+extern int total_peephole_opts;
+
 }
 }
 
