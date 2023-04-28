@@ -770,8 +770,8 @@ TAILCALLABLE(sub_with_floats)
     Float f;
     if (aux3 == 6)
     {
-        f = Value(aux2).as_fixnum();
-        f -= Value(aux1).as_object()->to_float();
+        f = Value(aux1).as_object()->to_float();
+        f -= Value(aux2).as_fixnum();
     }
     else if (aux3 == 9)
     {
