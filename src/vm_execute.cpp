@@ -55,6 +55,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
         Doesnt_Push_Frame,
         Pushes_Frame,
     } call_type;
+    bool with_return = false;
     DISPATCH_LOOP
     {
         if constexpr (debuggable)
@@ -165,6 +166,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                     nargs++;
                 }
                 call_type = Call_Type::Pushes_Frame;
+                with_return = false;
                 goto do_funcall;
             }
 
@@ -174,6 +176,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                 func = pop_param();
                 nargs = *reinterpret_cast<const uint32_t*>(ip+1);
                 call_type = Call_Type::Pushes_Frame;
+                with_return = false;
 
                 do_funcall:
                 auto ofunc = func;
@@ -198,7 +201,14 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                         push_param(result);
                         ip += 1 + sizeof(nargs);
                     }
-                    DISPATCH_NEXT;
+                    if (with_return)
+                    {
+                        goto do_return;
+                    }
+                    else
+                    {
+                        DISPATCH_NEXT;
+                    }
                 }
 
                 if (func.is_type(Object_Type::Closure))
@@ -287,6 +297,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                 m_stack_top += nargs;
 
                 call_type = Call_Type::Doesnt_Push_Frame;
+                with_return = true;
                 goto do_funcall;
             }
 
@@ -295,6 +306,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                 // fallthrough
             DISPATCH(return)
             {
+                do_return:
                 if (m_call_frame_top == m_call_frame_bottom)
                 {
                     goto done;
@@ -595,6 +607,7 @@ const uint8_t *VM_State::execute_impl(const uint8_t *ip)
                         signal_args = cdr(signal_args);
                     }
                     call_type = Call_Type::Doesnt_Push_Frame;
+                    with_return = false;
                     goto do_funcall;
                 }
                 else

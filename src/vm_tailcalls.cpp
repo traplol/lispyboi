@@ -101,6 +101,25 @@ OPCODE(apply)
     [[clang::musttail]] return execute_shared_do_funcall<true>(execute_table, ip, vm, aux1, aux2, aux3);
 }
 
+TAILCALLABLE(gotocall_call_primitive)
+{
+    bool raised_signal = false;
+    auto primitive = Value(func).as_lisp_primitive();
+    auto result = primitive(vm.m_stack_top - nargs, nargs, raised_signal);
+    vm.m_stack_top -= nargs;
+    if (raised_signal)
+    {
+        signal_args = result;
+        TAILCALL(shared_do_raise_signal);
+    }
+    else
+    {
+        vm.push_param(result);
+        ip += 5;
+        TAILCALL(return);
+    }
+}
+
 OPCODE(gotocall)
 {
 
@@ -108,12 +127,25 @@ OPCODE(gotocall)
 
     func = vm.pop_param();
     nargs = *reinterpret_cast<const uint32_t*>(ip+1);
+
+    if (symbolp(Value(func)))
+    {
+        func = Value(func).as_object()->symbol()->function();
+    }
+
     auto begin = vm.m_stack_top - nargs;
     auto end = vm.m_stack_top;
     vm.m_stack_top = vm.m_locals;
     std::copy(begin, end, vm.m_stack_top);
     vm.m_stack_top += nargs;
-    [[clang::musttail]] return execute_shared_do_funcall<false>(execute_table, ip, vm, aux1, aux2, aux3);
+    if (Value(func).is_lisp_primitive())
+    {
+        TAILCALL(gotocall_call_primitive);
+    }
+    else
+    {
+        TAILCALL(shared_do_funcall<false>);
+    }
 }
 
 TAILCALLABLE(funcall_too_few_args)
@@ -169,8 +201,8 @@ TAILCALLABLE(funcall_call_primitive)
     {
         vm.push_param(result);
         ip += 5;
+        DISPATCH_NEXT;
     }
-    DISPATCH_NEXT;
 }
 
 TAILCALLABLE(funcall_with_rest_args)
