@@ -7,3 +7,7 @@ peda-*
 /tmp/
 perf.data*
 gmon.out
+notes.txt
+default.profraw
+llvm-prof.sh
+watch-compile.sh
