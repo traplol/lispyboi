@@ -333,6 +333,14 @@ Value GC::alloc_string(const std::string &str)
         }                                                       \
     } while (0)
 
+#define CHECK_ARRAY(what)                                       \
+    do {                                                        \
+        if (!(what).is_type(Object_Type::Simple_Array)) {       \
+            raised_signal = true;                               \
+            return gc.list(g.s_TYPE_ERROR, g.s_SIMPLE_ARRAY, (what)); \
+        }                                                       \
+    } while (0)
+
 #define CHECK_NUMBER(what)                                      \
     do {                                                        \
         if (!numberp(what)) {                                   \
@@ -1372,6 +1380,21 @@ DEFUN("%FILE-WRITE", func_file_write, g.kernel_str(), false)
     return Value::wrap_fixnum(bytes_written);
 }
 
+DEFUN("%FILE-PUT-BYTE", func_file_put_byte, g.kernel_str(), false)
+{
+    /***
+        (file-put-byte stream byte)
+    */
+
+    CHECK_NARGS_EXACTLY(2);
+    CHECK_FILE_STREAM(args[0]);
+    auto stm = args[0].as_object()->file_stream();
+    CHECK_FIXNUM(args[1]);
+    auto byte = args[1].as_fixnum();
+    auto bytes_written = stm->write_byte(byte);
+    return Value::wrap_fixnum(bytes_written);
+}
+
 DEFUN("%FILE-PUTCHAR", func_file_putchar, g.kernel_str(), false)
 {
     /***
@@ -2351,6 +2374,30 @@ DEFUN("CHANGE-DIRECTORY", func_change_directory, g.core_str(), true)
     return error.value() != 0 ? Value::nil() : gc.alloc_string(current_path);
 }
 
+DEFUN("DIRECTORY-LISTING", func_directory_listing, g.core_str(), true)
+{
+    /***
+        (directory-listing path)
+    */
+    CHECK_NARGS_EXACTLY(1);
+    CHECK_STRING(args[0]);
+    auto path = lisp_string_to_native_string(args[0]);
+    std::error_code error;
+
+    GC_GUARD();
+    auto list = Value::nil();
+    try {
+        for (const auto &entry : std::filesystem::directory_iterator(path)) {
+            list = gc.cons(gc.alloc_string(entry.path()), list);
+        }
+    }
+    catch (std::filesystem::filesystem_error e)
+    {
+    }
+    GC_UNGUARD();
+    return list;
+}
+
 DEFUN("GET-EXECUTABLE-PATH", func_get_executable_path, g.core_str(), true)
 {
     /***
@@ -2796,6 +2843,40 @@ DEFUN("FFI-MARSHAL", func_ffi_marshal, g.kernel_str(), true)
     auto res = gc.list(g.s_MARSHAL_ERROR, gc.alloc_string("Cannot marshal object"), args[0]);
     GC_UNGUARD();
     return res;
+}
+
+DEFUN("FFI-COPY-BYTES", func_ffi_copy_bytes, g.kernel_str(), true)
+{
+    /***
+        (ffi-copy-bytes system-pointer array &optional size)
+     */
+    CHECK_NARGS_AT_LEAST(2);
+    CHECK_SYSTEM_POINTER(args[0]);
+    CHECK_ARRAY(args[1]);
+    Fixnum copy_len = 0;
+    auto array = args[1].as_object()->simple_array();
+    if (nargs > 2)
+    {
+        CHECK_FIXNUM(args[2]);
+        copy_len = args[2].as_fixnum();
+        if (copy_len > array->size())
+            copy_len = array->size();
+    }
+    else
+    {
+        copy_len = array->size();
+    }
+    
+    // @BUG Buffer-overflow is possible here, but do we care in the FFI?
+    auto buffer = reinterpret_cast<char*>(args[0].as_object()->system_pointer());
+    Fixnum i;
+    for (i = 0; i < copy_len; ++i) {
+        auto obj = array->at(i);
+        if (!obj.is_fixnum())
+            break;
+        buffer[i] = obj.as_fixnum();
+    }
+    return Value::wrap_fixnum(i);
 }
 
 DEFUN("FFI-STRLEN", func_ffi_strlen, g.kernel_str(), true)
@@ -3878,8 +3959,8 @@ int main(int argc, char **argv)
         eval_file(*vm, *compiler::THE_ROOT_SCOPE, file);
     }
 
-    std::cout << std::dec << "Peephole optimizer modifications: "
-              << lisp::bytecode::total_peephole_opts << "\n";
+    //std::cout << std::dec << "Peephole optimizer modifications: "
+    //          << lisp::bytecode::total_peephole_opts << "\n";
 
     if (repl)
     {

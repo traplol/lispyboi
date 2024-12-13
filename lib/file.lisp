@@ -73,6 +73,16 @@
   (output-stream-write-string stream ")")
   fs)
 
+(defmethod output-stream-write-byte ((stream file-stream) byte)
+  (kernel::%file-put-byte stream byte)
+  (kernel::%file-flush stream))
+
+(defmethod output-stream-write-bytes ((stream file-stream) bytes)
+  (typecase bytes 
+    (string (dotimes (i (length bytes))
+              (output-stream-write-byte stream (char-code (aref bytes i)))))
+    (t (signal 'type-error "Cannot write-bytes for " (type-of bytes) bytes))))
+
 (defmethod output-stream-write-char ((stream file-stream) character)
   (kernel::%file-putchar stream character)
   (kernel::%file-flush stream))

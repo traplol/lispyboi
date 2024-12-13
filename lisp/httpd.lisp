@@ -159,12 +159,10 @@
   (port)
   (time-to-live (seconds-from-now 60)))
 
-
-
-
 (let ((get)
       (post))
   (defun defroute (method route-path view-template controller-function)
+    ;;(format t "defroute: ~s~%" route-path)
     (ecase method
       (:get (push (list route-path view-template controller-function) get))
       (:post (push (list route-path view-template controller-function) post))))
@@ -183,14 +181,16 @@
                    (:post post))
                  #'string=)
         (if func
-            (http-ok (funcall func header path view the-args))
-            (http-error 404 (404-handler header path the-args)))))))
+            (if (eq :raw view) 
+                (list :raw (funcall func header path view the-args))
+                (list :string (http-ok (funcall func header path view the-args))))
+            (list :string (http-error 404 (404-handler header path the-args))))))))
 
 (defconstant +dummy-page+
   "<html>
     <body>
         <h1>Hello world</h1>
-        <p>~s<p>
+        <p>~a<p>
     </body>
 </html>")
 
@@ -202,9 +202,37 @@
     </body>
 </html>")
 
-(defroute :get "/foo" +dummy-page+
+(defroute :get "/books/" +dummy-page+
   (lambda (header path view args)
-    (format nil view "GET")))
+    (let ((lines))
+      (dolist (book (directory-listing "/home/max/books"))
+        (push (format nil "<a href=\"~a\">~a</a></br>~%" (basename book) (basename book)) lines))
+      (format nil view (apply #'concatenate lines)))))
+
+(defun get-book-bin (book)
+  (let ((bin (make-array 16 'fixnum 0)))
+    (with-open-file (file book 'read)
+      (if (file-ok-p file)
+          (until (file-eof-p file)
+                 (let ((b (file-read-byte file)))
+                   (when (/= -1 b)
+                     (array-push-back bin b))))))
+    bin))
+
+(dolist (book (directory-listing "/home/max/books"))
+  (defroute :get (concatenate "/books/" (basename book)) :raw
+    (lambda (header path view args)
+      (let* ((abs-path (concatenate "/home/max" path))
+             (book-name (basename abs-path))
+             (book-bytes (get-book-bin abs-path))
+             (header-bytes (string-bytes
+                            (array-join "\r\n"
+                                        "HTTP/1.0 200 OK"
+                                        "Content-Type: application/pdf"
+                                        (format nil "Content-Length: ~a" (length book-bytes))
+                                        (format nil "Content-Disposition: inline; filename=~s" book-name)
+                                        "" ""))))
+        (array-join nil header-bytes book-bytes)))))
 
 (defroute :post "/foo" +dummy-page+
   (lambda (header path view args)
@@ -223,7 +251,12 @@
         (let ((header (parse-http-header recv)))
           (format t "~a ~a ~s~%"
                   timestamp (http-header-method header) (http-header-path header))
-          (socket-send socket (dispatch-path header)))
+          (destructuring-bind (type response)
+              (dispatch-path header)
+            (cond ((eq :raw type)
+                   (socket-send-bytes socket response))
+                  ((eq :string type)
+                   (socket-send socket response)))))
       (http-error (code &rest args)
         (if args
             (format t "~a HTTP ERROR ~d: ~s~%" timestamp code (apply #'format nil args))
@@ -242,7 +275,8 @@
     (while t
       (when (< (length clients) max-connections)
         (destructuring-bind (client-socket client-addr client-port)
-            (socket-accept server)
+            (ignore-errors
+             (socket-accept server))
           (when client-socket
             (push (make-http-client :socket client-socket
                                     :address client-addr

@@ -177,6 +177,9 @@
    clocks-per-second
    operating-system
 
+   parent-directory
+   basename
+
    unwind-protect
    ignore-errors
    with-open-file
@@ -1171,6 +1174,10 @@ may be provided or left NIL."
 (defun parent-directory (path)
   (let ((idx (find-last-of path #\/)))
     (when idx (substring path 0 idx))))
+
+(defun basename (path)
+  (let ((idx (find-last-of path #\/)))
+    (when idx (substring path (+ 1 idx)))))
 
 (defun copy-array (array)
   (let ((copy (make-array (array-length array) (array-type array))))

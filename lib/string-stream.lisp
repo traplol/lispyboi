@@ -59,6 +59,9 @@
       (output-stream-write-char stream (aref buf i))))
   ss)
 
+(defmethod output-stream-write-byte ((ss string-stream) byte)
+  (string-stream-write-char ss byte))
+
 (defmethod output-stream-write-char ((ss string-stream) character)
   (string-stream-write-char ss character))
 

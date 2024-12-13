@@ -15,6 +15,7 @@
            socket-close
            socket-alive-p
            socket-send
+           socket-send-bytes
            socket-recv
            socket-recv-string
            socket-accept))
@@ -142,13 +143,29 @@
    (defun %socket-send (socket message)
      (let* ((written 0)
             (bytes (ffi-marshal message))
-            (size (ffi-strlen bytes)))
+            (size (length message)))
        (while (< written size)
               (let ((rc (ffi-coerce-fixnum
                          (c-send socket (ffi-ref bytes written) (- size written) 0))))
                 (when (< rc 0)
                   (signal 'socket-error "send failed with code: " rc))
                 (incf written rc)))
+       written))
+
+   (defun %socket-send-bytes (socket message)
+     (let* ((written 0)
+            (size (length message))
+            (bytes (ffi-alloc size)))
+       (unwind-protect
+            (progn
+              (ffi-copy-bytes bytes message size)
+              (while (< written size)
+                     (let ((rc (ffi-coerce-fixnum
+                                (c-send socket (ffi-ref bytes written) (- size written) 0))))
+                       (when (< rc 0)
+                         (signal 'socket-error "send failed with code: " rc))
+                       (incf written rc))))
+         (ffi-free bytes))
        written))
 
    (defun %socket-recv (socket buffer-size)
@@ -241,6 +258,12 @@
     (unless int-socket
       (signal 'socket-error "SOCKET-SEND: Socket internal FD is NIL"))
     (%socket-send int-socket message)))
+
+(defun socket-send-bytes (socket bytes)
+  (let ((int-socket (socket-fd socket)))
+    (unless int-socket
+      (signal 'socket-error "SOCKET-SEND: Socket internal FD is NIL"))
+    (%socket-send-bytes int-socket bytes)))
 
 (defun socket-recv (socket &optional (buffer-size-hint 1024))
   (let ((int-socket (socket-fd socket)))

@@ -289,6 +289,12 @@ struct File_Stream
         }
     }
 
+    Fixnum write_byte(char c)
+    {
+        m_stream.write(&c, 1);
+        return 1;
+    }
+
     Fixnum write_character(int32_t c)
     {
         if (m_stream.good())

@@ -62,6 +62,7 @@ struct Runtime_Globals
     Value s_CONS;
     Value s_LIST;
     Value s_CHARACTER;
+    Value s_BYTE;
     Value s_SYMBOL;
     Value s_STRING;
     Value s_FUNCTION;

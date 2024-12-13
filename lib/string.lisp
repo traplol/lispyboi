@@ -147,11 +147,25 @@ e.g: (array-join \", \" \"1\" \"2\" \"3\" \"4\") ==> \"1, 2, 3, 4\" "
 (defun string/= (string1 string2 &key (start1 0) (end1 (length string1)) (start2 0) (end2 (length string2)))
   (not (string= string1 string2 :start1 start1 :end1 end1 :start2 start2 :end2 end2)))
 
+(defun string-bytes (string)
+  (let ((bytes (make-array (length string) 'fixnum 0)))
+    (dotimes (i (length string))
+      (let ((c (char-code (aref string i))))
+        (when (> c 16777215)
+          (array-push-back bytes (bit-and (bit-shift c -24) 255)))
+        (when (> c 65535)
+          (array-push-back bytes (bit-and (bit-shift c -16) 255)))
+        (when (> c 255)
+          (array-push-back bytes (bit-and (bit-shift c -8) 255)))
+        (array-push-back bytes (bit-and c 255))))
+    bytes))
+
 
 (export '(string-split
           string-trim
           string-trim-left
           string-trim-right
+          string-bytes
           array-join
           char-downcase
           char-upcase

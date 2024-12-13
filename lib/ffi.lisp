@@ -344,11 +344,13 @@
           ffi-close
           ffi-get-symbol
           ffi-call
+          ffi-call-void
           ffi-nullptr
           ffi-alloc
           ffi-zero-alloc
           ffi-free
           ffi-marshal
+          ffi-copy-bytes
           ffi-strlen
           ffi-coerce-fixnum
           ffi-coerce-int
