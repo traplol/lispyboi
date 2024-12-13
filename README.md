@@ -31,8 +31,7 @@ Lispyboi is a bytecode-based Lisp implementation written in C++. It features a v
 ## Building
 
 ### Prerequisites
-- Modern C++ compiler (C++11 or later)
-- OpenSSL development libraries
+- Modern C++ compiler (C++17 or later)
 - Make
 
 ### Build Steps
